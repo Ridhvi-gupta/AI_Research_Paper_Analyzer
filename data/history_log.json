@@ -1,0 +1,58 @@
+[
+  {
+    "filename": "1810.04805v2.pdf",
+    "uploaded_at": "2026-10-23 15:08",
+    "pages": 16,
+    "words": 10152,
+    "sentences": 645
+  },
+  {
+    "filename": "1706.03762v7.pdf",
+    "uploaded_at": "2026-10-23 13:44",
+    "pages": 15,
+    "words": 6095,
+    "sentences": 398
+  },
+  {
+    "filename": "Professional report structures.pdf",
+    "uploaded_at": "2026-10-23 13:14",
+    "pages": 4,
+    "words": 1015,
+    "sentences": 46
+  },
+  {
+    "filename": "Brown_GPT3_FewShot_Learners_2020.pdf",
+    "uploaded_at": "2026-10-23 13:08",
+    "pages": 13,
+    "words": 84,
+    "sentences": 6
+  },
+  {
+    "filename": "Ronneberger_UNet_Biomedical_Segmentation_2015.pdf",
+    "uploaded_at": "2026-10-23 13:08",
+    "pages": 8,
+    "words": 95,
+    "sentences": 6
+  },
+  {
+    "filename": "He_Deep_Residual_Learning_ResNet_2016.pdf",
+    "uploaded_at": "2026-10-23 13:08",
+    "pages": 12,
+    "words": 94,
+    "sentences": 7
+  },
+  {
+    "filename": "Devlin_BERT_Pretraining_NLP_2019.pdf",
+    "uploaded_at": "2026-10-23 13:08",
+    "pages": 11,
+    "words": 89,
+    "sentences": 6
+  },
+  {
+    "filename": "Vaswani_Transformer_Attention_2017.pdf",
+    "uploaded_at": "2026-10-23 13:08",
+    "pages": 13,
+    "words": 90,
+    "sentences": 6
+  }
+]

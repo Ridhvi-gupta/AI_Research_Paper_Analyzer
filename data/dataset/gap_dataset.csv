@@ -1,0 +1,25 @@
+sentence,label
+"However, this method has several limitations in real-world scenarios.",1
+"Further research is required to improve the scalability of this model.",1
+"Future work should investigate larger transformer architectures.",1
+"There is a lack of evaluation on unstructured clinical data.",1
+"This problem remains unexplored in multi-agent environments.",1
+"Existing methods do not address this communication bottleneck.",1
+"A notable limitation is the high computational latency during inference.",1
+"The question of robust generalization remains unclear.",1
+"This issue requires further investigation under noisy conditions.",1
+"It remains an open problem to optimize non-convex energy landscapes.",1
+"A key bottleneck is the unavailability of dense benchmark annotations.",1
+"The model fails to converge when features are highly collinear.",1
+"The proposed architecture achieved 96 percent accuracy on the test set.",0
+"We collected experimental data across three diverse benchmark datasets.",0
+"The neural network contains three convolutional layers and max pooling.",0
+"The empirical results are summarized in Table 2.",0
+"We used Python and Scikit-learn for all pipeline implementations.",0
+"Feature extraction was performed using TF-IDF vectorization.",0
+"Cosine similarity was computed across all document pairs.",0
+"Figure 4 shows the loss curves over fifty training epochs.",0
+"In this section, we present the mathematical formulation of our loss.",0
+"The baseline models were trained using stochastic gradient descent.",0
+"Word embeddings were initialized with dimensionality of one hundred.",0
+"All experiments were conducted on an Intel Core processor.",0
