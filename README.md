@@ -28,3 +28,14 @@ Automated literature review and research gap mining system that extracts, prepro
 In your VS Code terminal:
 ```bash
 .\venv\Scripts\activate
+
+## Commnad to run in terminal 
+# python -m streamlit run app.py
+
+# OR
+
+## If your dependencies are installed inside a venv folder, run:
+
+# .\venv\Scripts\Activate.ps1
+# python -m streamlit run app.py
+
