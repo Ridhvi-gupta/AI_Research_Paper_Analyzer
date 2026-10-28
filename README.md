@@ -1,7 +1,6 @@
 # AI Research Paper Analyzer + Research Gap Mining
 
-**Domain**: Data Analysis + Natural Language Processing + Deep Learning  
-**Course**: CSET214 Data Analysis Using Python | Bennett University  
+**Domain**: Data Analysis + Natural Language Processing + Deep Learning    
 **Team Members**: 
 - Ridhvi Gupta (S25CSEU548)
 - Shaurya Pathak (S25CSEU0513)  
