@@ -4,7 +4,6 @@
 **Team Members**: 
 - Ridhvi Gupta (S25CSEU548)
 - Shaurya Pathak (S25CSEU0513)  
-**Faculty Guide**: Mrs. Susmita Das  
 
 ---
 
