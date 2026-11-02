@@ -31,6 +31,7 @@ def generate_report(output_path: str, papers: list[dict], gap_results: list[dict
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
     ]))
+    
     elements.append(tbl)
     doc.build(elements)
     return output_path
