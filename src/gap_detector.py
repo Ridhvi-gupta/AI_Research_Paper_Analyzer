@@ -9,6 +9,7 @@ def analyze_sentence(sentence: str, model=None, tokenizer=None) -> dict:
         cnn_sc = predict_gap_probability(model, tokenizer, sentence)
         combined_sc = 0.4 * nlp_sc + 0.6 * cnn_sc
         is_candidate = combined_sc >= 0.5
+        
     else:
         cnn_sc = 0.0
         combined_sc = nlp_sc
