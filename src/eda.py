@@ -11,6 +11,7 @@ def create_word_frequency_chart(text: str, top_n: int = 20):
         fig, ax = plt.subplots(figsize=(6, 3))
         ax.text(0.5, 0.5, "No text available", ha="center")
         return fig
+    
     words, counts = zip(*data)
     fig, ax = plt.subplots(figsize=(10, 4.5))
     ax.bar(words, counts, color="#2b5c8f")
