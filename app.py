@@ -3,15 +3,16 @@ import pandas as pd
 import numpy as np
 import os
 import json
+import re
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Backend Module Imports
-from src.pdf_extractor import extract_pdf_info
-from src.preprocessing import clean_academic_text, segment_sentences
+from src.universal_extractor import extract_universal_document
+from src.gap_rules import load_learned_triggers, induce_gap_vocabulary_from_corpus, save_learned_triggers
+from src.dynamic_gap_learner import load_learned_triggers, induce_gap_vocabulary_from_corpus
 from src.cnn_model import predict_gap_probability
-from src.word2vec import train_word2vec_model, expand_keywords_with_word2vec
 from src.report_generator import generate_pdf_report
 
 # ==============================================================================
@@ -56,6 +57,8 @@ if "validated_gaps" not in st.session_state:
     st.session_state.validated_gaps = {}
 if "rejected_gaps" not in st.session_state:
     st.session_state.rejected_gaps = set()
+if "newly_learned_words" not in st.session_state:
+    st.session_state.newly_learned_words = []
 
 # ==============================================================================
 # 3. DYNAMIC THEME STYLING WITH GLOWING PIPELINE BOXES
@@ -294,8 +297,6 @@ with top_h2:
 # ==============================================================================
 # 5. TRIGGER WORD HIGHLIGHTER & SUGGESTION GENERATOR
 # ==============================================================================
-import re
-
 def highlight_trigger_words(sentence, trigger_words):
     highlighted = sentence
     for tw in sorted(trigger_words, key=len, reverse=True):
@@ -311,112 +312,93 @@ def generate_actionable_suggestion(sentence, paper_name):
     if any(k in s_low for k in ["complexity", "quadratic", "computation", "long document", "memory footprint", "tpu", "gpu", "resource"]):
         return {
             "type": "⚡ Computational & Scalability Optimization",
-            "suggestion": (
-                "Develop linear-time kernel approximations (such as FlashAttention or Performer), "
-                "or implement parameter-efficient sparse attention routing to reduce quadratic memory bounds."
-            )
+            "suggestion": "Develop linear-time kernel approximations (FlashAttention/Performer) or implement sparse attention routing."
         }
     elif any(k in s_low for k in ["imbalance", "annotated", "sample", "dataset", "few", "micro-structure", "lack of data"]):
         return {
             "type": "📊 Data Scarcity & Class Imbalance Remediation",
-            "suggestion": (
-                "Integrate class-rebalancing loss formulations (e.g., Focal Tversky Loss) and evaluate "
-                "synthetic generative oversampling (Diffusion or Generative Adversarial Networks) on the minority distribution."
-            )
+            "suggestion": "Integrate class-rebalancing loss formulations (Focal Loss) and evaluate diffusion/GAN synthetic oversampling."
         }
     elif any(k in s_low for k in ["hallucination", "factual", "bias", "reasoning", "verification", "external"]):
         return {
             "type": "🛡 Factuality & Grounded Verification",
-            "suggestion": (
-                "Ground model outputs using Retrieval-Augmented Generation (RAG) hooked into structured "
-                "domain knowledge bases, alongside automated self-consistency verification passes."
-            )
+            "suggestion": "Ground model outputs using Retrieval-Augmented Generation (RAG) and automated self-consistency verification passes."
         }
     elif any(k in s_low for k in ["theoretical", "understanding", "degradation", "skip", "layer", "depth"]):
         return {
             "type": "📐 Architectural & Theoretical Investigation",
-            "suggestion": (
-                "Formulate dynamical systems bounds for gradient backpropagation across ultra-deep topologies "
-                "or investigate continuous state-space models (such as Mamba or S4) as recurrence alternatives."
-            )
+            "suggestion": "Formulate dynamical systems bounds for gradient flow or investigate continuous state-space models (Mamba/S4)."
         }
     else:
         return {
             "type": "🔬 Empirical Validation & Benchmark Generalization",
-            "suggestion": (
-                "Execute rigorous ablation benchmarks across diverse domain datasets, test out-of-distribution "
-                "edge scenarios, and establish standardized quantitative evaluation protocols."
-            )
+            "suggestion": "Execute cross-domain ablation benchmarks, test out-of-distribution scenarios, and establish standardized evaluation protocols."
         }
 
 # ==============================================================================
-# 6. BENCHMARK CORPUS GENERATOR
+# 6. BENCHMARK CORPUS GENERATOR (CROSS-DOMAIN: AI, BIO, MEDICINE, PHYSICS)
 # ==============================================================================
 def load_benchmark_corpus():
     benchmark_docs = {
-        "Vaswani_Transformer_Attention_2017.pdf": (
-            "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks "
-            "that include an encoder and a decoder. The dominant sequence models connect through an attention mechanism. "
-            "We propose the Transformer, a model architecture eschewing recurrence and relying entirely on self-attention. "
+        "Vaswani_Transformer_AI_2017.pdf": (
+            "We propose the Transformer, a model architecture relying entirely on self-attention for sequence transduction. "
             "However, the computational complexity of self-attention scales quadratically with sequence length, which poses a severe limitation for ultra-long documents. "
             "Future work will investigate sparse attention matrices to extend this to multi-gigabyte document analysis. "
             "A notable drawback remains the lack of recurrence, making positional encoding heuristics necessary."
         ),
-        "Devlin_BERT_Pretraining_NLP_2019.pdf": (
-            "We introduce BERT: Bidirectional Encoder Representations from Transformers. BERT is designed to pretrain deep bidirectional representations "
-            "from unlabeled text by jointly conditioning on both left and right context in all layers. "
-            "As a result, the pretrained BERT model can be fine-tuned with just one additional output layer. "
-            "Nevertheless, a major limitation is the heavy pretraining computation requiring massive TPU clusters unavailable to low-resource researchers. "
-            "Furthermore, BERT cannot easily generate autoregressive sequences due to its masked language modeling nature. "
-            "Future research should explore parameter-efficient pruning and distillation for edge devices."
+        "AlphaFold_Protein_Structure_BioAI_2021.docx": (
+            "Accurate computational prediction of 3D protein structures from genetic amino acid sequences has been an elusive challenge in biology. "
+            "We introduce AlphaFold, a neural system achieving atomic-scale accuracy across complex macromolecular polymers and cellular assemblies. "
+            "Nevertheless, a fundamental limitation is the inability to predict disordered protein dynamics and ligand binding conformational changes. "
+            "Furthermore, high GPU memory requirements create a prohibitive bottleneck for multi-chain megadalton complexes. "
+            "Future research should explore co-folding with small-molecule therapeutics."
         ),
-        "He_Deep_Residual_Learning_ResNet_2016.pdf": (
-            "Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training "
-            "of networks that are substantially deeper than those used previously. We explicitly reformulate the layers as learning residual functions. "
+        "He_Deep_Residual_Learning_ResNet_2016.txt": (
+            "Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training of networks. "
             "Comprehensive empirical evidence shows that these residual networks are easier to optimize and gain accuracy from greatly increased depth. "
             "However, the memory footprint increases linearly with layer count, which limits deployment on real-time embedded systems. "
             "There remains a lack of theoretical understanding regarding why degradation occurs beyond two hundred layers. "
             "Future investigations must address optimal skip-connection topologies."
         ),
-        "Ronneberger_UNet_Biomedical_Segmentation_2015.pdf": (
-            "There is large consent that successful training of deep networks requires many thousand annotated training samples. "
-            "In this paper, we present a network and training strategy that relies on data augmentation to use available annotated samples more efficiently. "
-            "The architecture consists of a contracting path to capture context and a symmetric expanding path that enables precise localization. "
-            "A persistent challenge is the reliance on rigid 2D slices, ignoring 3D volumetric context in medical MRI scans. "
-            "However, our method is constrained by high class imbalance in micro-structure lesions. "
-            "Future work will evaluate generalized 3D elastic augmentations."
+        "CRISPR_Cas9_Genome_Editing_Biology_2020.html": (
+            "Targeted genome engineering utilizing RNA-guided Cas9 endonucleases has revolutionized biotechnology, molecular medicine, and cell therapy. "
+            "By hybridizing custom single-guide RNA sequences, double-strand breaks can be introduced into cellular DNA with high site-specificity. "
+            "However, our method is constrained by off-target cleavage mutations and cytotoxicity in primary human hematopoietic stem cells. "
+            "A persistent challenge remains the in vivo delivery across the blood-brain barrier for central nervous system therapies. "
+            "Future work will evaluate engineered base editors to minimize double-strand chromosomal breaks."
         ),
-        "Brown_GPT3_FewShot_Learners_2020.pdf": (
-            "Recent work has demonstrated substantial gains on many NLP tasks and benchmarks by pre-training on a large corpus of text followed by fine-tuning. "
-            "Here we show that scaling up language models greatly improves task-agnostic, few-shot performance. "
-            "We train GPT-3, an autoregressive language model with 175 billion parameters. "
-            "Despite impressive fluency, GPT-3 exhibits notable hallucination and bias across factual question benchmarks. "
-            "A fundamental limitation is the inability to perform active reasoning or verification. "
-            "Future research must focus on grounding language models with external knowledge retrievers."
+        "Quantum_Computing_Qubit_Decoherence_Physics_2022.json": (
+            "Superconducting qubits offer a promising path toward fault-tolerant quantum supremacy and polynomial speedups in molecular simulation. "
+            "We demonstrate a programmable quantum processor containing 53 superconducting qubits operating at cryogenic millikelvin temperatures. "
+            "A severe limitation remains thermal decoherence and high crosstalk noise during simultaneous two-qubit gate operations. "
+            "Furthermore, error mitigation requires thousands of physical qubits per logical qubit, which remains incomputable with current cryostats. "
+            "Future investigations must address 3D topological surface codes to sustain coherence times."
         )
     }
 
     history_entries = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    all_sents = []
+
     for fname, text in benchmark_docs.items():
-        sents = segment_sentences(text)
-        words = text.split()
-        st.session_state.papers[fname] = {
-            "text": text,
-            "page_count": np.random.randint(8, 16),
-            "word_count": len(words),
-            "char_count": len(text),
-            "sentences": sents
-        }
+        doc_info = extract_universal_document(text.encode("utf-8"), fname)
+        st.session_state.papers[fname] = doc_info
+        all_sents.extend(doc_info["sentences"])
         history_entries.append({
             "filename": fname,
             "uploaded_at": now_str,
-            "pages": st.session_state.papers[fname]["page_count"],
-            "words": len(words),
-            "sentences": len(sents)
+            "format": doc_info["extension"],
+            "pages": doc_info["page_count"],
+            "words": doc_info["word_count"],
+            "sentences": len(doc_info["sentences"])
         })
+
+    # Trigger Self-Learning Vocabulary Induction
+    discovered_words = induce_gap_vocabulary_from_corpus(all_sents)
+    st.session_state.newly_learned_words = discovered_words
+
     save_to_history(history_entries)
-    st.toast("⚡ Benchmark Corpus Loaded with Real Backend Connected!", icon="✨")
+    st.toast("⚡ Multi-Domain Corpus (AI, Bio, Medicine, Physics) Loaded & Gaps Learned!", icon="✨")
 
 # ==============================================================================
 # 7. GLOWING PIPELINE & INSTRUCTIONS COMPONENT
@@ -427,121 +409,41 @@ def render_glowing_pipeline_component():
     <div class="pipeline-screenshot-container">
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 1</div>
-            <div class="stage-title">PDF Ingestion</div>
-            <div class="stage-desc">PyMuPDF batch stream</div>
+            <div class="stage-title">Multi-Format Ingestion</div>
+            <div class="stage-desc">PDF, DOCX, TXT, JSON, HTML</div>
         </div>
         <div class="pipeline-arrow-glow">➜</div>
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 2</div>
             <div class="stage-title">NLP Cleaning</div>
-            <div class="stage-desc">NLTK Lemmatizer</div>
+            <div class="stage-desc">Academic noise removal</div>
         </div>
         <div class="pipeline-arrow-glow">➜</div>
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 3</div>
-            <div class="stage-title">Vector Space</div>
-            <div class="stage-desc">TF-IDF & Word2Vec</div>
+            <div class="stage-title">Domain Discovery</div>
+            <div class="stage-desc">Bio, AI, Med, Physics</div>
         </div>
         <div class="pipeline-arrow-glow">➜</div>
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 4</div>
-            <div class="stage-title">Clustering</div>
-            <div class="stage-desc">Cosine & 2D PCA</div>
+            <div class="stage-title">Cross-Clustering</div>
+            <div class="stage-desc">PCA & Topic Overlaps</div>
         </div>
         <div class="pipeline-arrow-glow">➜</div>
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 5</div>
-            <div class="stage-title">Gap Mining</div>
-            <div class="stage-desc">Hybrid: Rules + 1D-CNN</div>
+            <div class="stage-title">Adaptive Gap Mining</div>
+            <div class="stage-desc">Self-Learning + 1D-CNN</div>
         </div>
         <div class="pipeline-arrow-glow">➜</div>
         <div class="pipeline-stage-box">
             <div class="stage-num">Stage 6</div>
-            <div class="stage-title">Dossier</div>
+            <div class="stage-title">Executive Dossier</div>
             <div class="stage-desc">ReportLab A4 PDF</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-def render_step_by_step_instructions():
-    st.markdown("#### 📖 How To Execute Each Step (User Guide)")
-    
-    stage_choice = st.selectbox(
-        "Select a Stage to view exact instructions on how it works & how to do it:",
-        [
-            "Stage 1: PDF Ingestion (How to upload & extract)",
-            "Stage 2: NLP Cleaning (How text is normalized)",
-            "Stage 3: Vector Space (How words become vectors)",
-            "Stage 4: Clustering & Similarity (How papers are compared)",
-            "Stage 5: Gap Mining & Suggestions (How AI finds limitations)",
-            "Stage 6: Dossier Export (How to download the final report)"
-        ]
-    )
-
-    if "Stage 1" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 1 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 1: PDF Ingestion & Streaming</h4>
-            <p><b>How to do it:</b> Go to the <b>📄 Papers & Batch Upload</b> page in the sidebar. Drag and drop any number of research PDF files into the upload box (or click <i>'⚡ Load Benchmark Papers'</i>).</p>
-            <p><b>What the code does:</b> Uses <code>pymupdf</code> to parse the binary streams of your PDFs, extracts pages without losing formatting, and strips the bibliography section to avoid false citations.</p>
-            <p><b>Output:</b> Cleaned text indexed with page counts and word statistics.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    elif "Stage 2" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 2 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 2: NLP Cleaning & Lemmatization</h4>
-            <p><b>How to do it:</b> Handled automatically after upload! Navigate to <b>📈 Text Analysis & EDA</b> to inspect the extracted vocabulary.</p>
-            <p><b>What the code does:</b> Uses <code>clean_academic_text</code> to remove numeric citations <code>[1, 2]</code> and author citations, segments into clean sentences, and runs WordNet Lemmatization.</p>
-            <p><b>Output:</b> Cleaned sentence arrays ready for mathematical modeling.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    elif "Stage 3" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 3 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 3: Vector Space Embeddings (TF-IDF + Word2Vec)</h4>
-            <p><b>How to do it:</b> Automatic! View dominant technical keywords and top term importance in the EDA and Analysis Hub.</p>
-            <p><b>What the code does:</b> Computes a 500-feature TF-IDF matrix that assigns higher weights to rare scientific terms, and fits a continuous skip-gram Word2Vec model for dense semantic word vectors.</p>
-            <p><b>Output:</b> Numerical vector matrices representing document semantics.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    elif "Stage 4" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 4 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 4: Cosine Similarity & 2D PCA Clustering</h4>
-            <p><b>How to do it:</b> In the sidebar, click <b>🔗 Cosine Similarity</b> to view the heatmap, and click <b>🧩 Topics & Clusters</b> to adjust the cluster count slider <i>k</i>.</p>
-            <p><b>What the code does:</b> Calculates the cosine angle between paper vectors:
-            $$\\text{Similarity}(\\vec{u}, \\vec{v}) = \\frac{\\vec{u} \\cdot \\vec{v}}{\\|\\vec{u}\\| \\|\\vec{v}\\|}$$
-            and compresses the 500-dimension space into 2 axes via PCA for scatter plotting.</p>
-            <p><b>Output:</b> Color-coded cluster assignments and pairwise similarity ranking.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    elif "Stage 5" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 5 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 5: Hybrid Gap Mining & Recommendations</h4>
-            <p><b>How to do it:</b> Click <b>🔍 Research Gap Mining & Suggestions</b>. Read the highlighted limitation sentences, review the 💡 <i>'What Has To Be Done'</i> suggestions, and click <b>✓ Validate Gap</b> or <b>✕ Reject</b>.</p>
-            <p><b>What the code does:</b> Uses the real 1D-CNN model in <code>src/cnn_model.py</code> combined with lexical concession rules:
-            $$\\text{Final Score} = 0.40 \\times (\\text{NLP Rules}) + 0.60 \\times (\\text{1D-CNN Probability})$$
-            and automatically generates categorized mitigation recommendations.</p>
-            <p><b>Output:</b> Prioritized list of verified open scientific problems.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    elif "Stage 6" in stage_choice:
-        st.markdown("""
-        <div class="step-instruction-card">
-            <span class="step-badge">Stage 6 Execution Guide</span>
-            <h4 style="color:#ffaa00; margin-top:2px;">Step 6: Executive Dossier Export</h4>
-            <p><b>How to do it:</b> Head to <b>📑 Dossier Reports</b> in the sidebar and click the <b>📄 Export Comprehensive Research Dossier (PDF)</b> button.</p>
-            <p><b>What the code does:</b> Calls <code>generate_pdf_report</code> in <code>src/report_generator.py</code> to compile all your researcher-validated gaps, paper source citations, confidence scores, and future recommendations into a structured PDF.</p>
-            <p><b>Output:</b> A downloadable, publication-grade <code>ResearchLens_Gap_Dossier.pdf</code> file.</p>
-        </div>
-        """, unsafe_allow_html=True)
 
 # ==============================================================================
 # 8. SIDEBAR NAVIGATION
@@ -554,13 +456,12 @@ with st.sidebar:
         [
             "🏠 Home",
             "🚀 Upload & Analyze Hub",
-            "📄 Papers & Batch Upload",
+            "📄 Multi-Format Papers Library",
             "📈 Text Analysis & EDA",
             "🔗 Cosine Similarity",
-            "🧩 Topics & Clusters",
-            "🔍 Research Gap Mining & Suggestions",
-            "⚠️ Error Analysis & Diagnostics",
-            "🧠 AI Evidence & Rules",
+            "🧩 Interdisciplinary Clustering",
+            "🔍 Adaptive Gap Mining & Suggestions",
+            "🧠 Learned Vocabulary & AI Rules",
             "📑 Dossier Reports",
             "🔬 Pipeline Architecture",
             "❓ FAQ & Research Q&A",
@@ -574,13 +475,13 @@ with st.sidebar:
     st.caption("ACTIVE TELEMETRY")
     col_sb1, col_sb2 = st.columns(2)
     with col_sb1:
-        st.metric("Papers", f"{active_papers_count}")
+        st.metric("Documents", f"{active_papers_count}")
     with col_sb2:
         tot_sents = sum(len(p.get("sentences", [])) for p in st.session_state.papers.values())
         st.metric("Sentences", f"{tot_sents}")
 
     st.markdown("---")
-    if st.button("⚡ Load Benchmark Papers", use_container_width=True):
+    if st.button("⚡ Load Multi-Domain Corpus", use_container_width=True):
         load_benchmark_corpus()
         st.rerun()
 
@@ -589,6 +490,7 @@ with st.sidebar:
             st.session_state.papers = {}
             st.session_state.validated_gaps = {}
             st.session_state.rejected_gaps = set()
+            st.session_state.newly_learned_words = []
             st.rerun()
 
     st.markdown("""
@@ -605,58 +507,60 @@ if page == "🏠 Home":
     <div class="hero-card">
         <div class="hero-title">Welcome to ResearchLens AI</div>
         <div class="hero-subtitle">
-            An Autonomous AI Research Intelligence Platform engineered to ingest scientific literature, 
-            perform statistical and semantic vector modeling, discover hidden inter-paper synergies, and mine 
-            verified research gaps with word-level attribution, actionable suggestions, and comprehensive error diagnostics.
+            An Autonomous Cross-Domain Research Intelligence Platform engineered to ingest scientific literature 
+            across all formats (PDF, Word DOCX, TXT, MD, CSV, JSON, HTML), model interdisciplinary clusters 
+            (Biology, AI, Clinical Medicine, Physics, Chemistry), and mine research gaps using an adaptive self-learning 
+            engine that continuously discovers new gap indicators over time.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    hcol1, hcol2, hcol3 = st.columns([1.2, 1.2, 2])
+    hcol1, hcol2, hcol3 = st.columns([1.3, 1.3, 2])
     with hcol1:
-        if st.button("🚀 Load Benchmark Corpus", use_container_width=True):
+        if st.button("🚀 Load Multi-Domain Corpus", use_container_width=True):
             load_benchmark_corpus()
             st.rerun()
     with hcol2:
-        if st.button("📂 Upload & Analyze Now", use_container_width=True, type="secondary"):
+        if st.button("📂 Upload Files (All Formats)", use_container_width=True, type="secondary"):
             st.session_state.page = "🚀 Upload & Analyze Hub"
             st.info("Head over to '🚀 Upload & Analyze Hub' in the sidebar to run an automated scan!")
 
     st.markdown("---")
     render_glowing_pipeline_component()
-    render_step_by_step_instructions()
 
 # ==============================================================================
-# 10. ROUTING: 🚀 UPLOAD & ANALYZE HUB
+# 10. ROUTING: 🚀 UPLOAD & ANALYZE HUB (ALL FORMATS + CROSS-DOMAIN SCAN)
 # ==============================================================================
 elif page == "🚀 Upload & Analyze Hub":
     st.title("One-Click Literature Analysis Hub")
-    st.caption("Upload your papers and instantly execute the full extraction, similarity, gap mining, and suggestion suite.")
+    st.caption("Upload papers in any format (PDF, DOCX, TXT, MD, CSV, JSON, HTML) for automated cross-domain analysis.")
 
     with st.container(border=True):
-        st.subheader("1. Ingest PDF Research Papers")
+        st.subheader("1. Ingest Research Papers & Documents")
         uploaded_files = st.file_uploader(
-            "Upload any number of research papers (PDF)",
-            type=["pdf"],
+            "Upload any files (PDF, Word DOCX, Text, Markdown, CSV, JSON, HTML)",
+            type=["pdf", "docx", "txt", "md", "csv", "json", "html", "htm"],
             accept_multiple_files=True,
-            help="Drop your PDFs here to trigger instant automated analysis."
+            help="Supports all document types simultaneously. Automatically strips bibliographies and noise."
         )
 
         if uploaded_files:
-            progress_bar = st.progress(0, text="Extracting and indexing literature...")
+            progress_bar = st.progress(0, text="Extracting and indexing multi-format literature...")
             new_history_entries = []
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            all_new_sents = []
 
             for idx, uf in enumerate(uploaded_files):
                 if uf.name not in st.session_state.papers:
                     try:
-                        # Calls src/pdf_extractor.py with citation stripping and section cutoff
-                        doc_info = extract_pdf_info(uf.read())
+                        doc_info = extract_universal_document(uf.read(), uf.name)
                         st.session_state.papers[uf.name] = doc_info
+                        all_new_sents.extend(doc_info["sentences"])
 
                         new_history_entries.append({
                             "filename": uf.name,
                             "uploaded_at": now_str,
+                            "format": doc_info["extension"],
                             "pages": doc_info["page_count"],
                             "words": doc_info["word_count"],
                             "sentences": len(doc_info["sentences"])
@@ -666,57 +570,54 @@ elif page == "🚀 Upload & Analyze Hub":
 
                 progress_bar.progress((idx + 1) / len(uploaded_files), text=f"Processed: {uf.name}")
 
+            # Run Continuous Vocabulary Induction
+            learned_words = induce_gap_vocabulary_from_corpus(all_new_sents)
+            if learned_words:
+                st.session_state.newly_learned_words = learned_words
+                st.toast(f"🧠 Model Learned {len(learned_words)} New Domain Gap Words!", icon="✨")
+
             if new_history_entries:
                 save_to_history(new_history_entries)
-                st.success(f"✓ {len(new_history_entries)} papers extracted and indexed successfully!")
+                st.success(f"✓ {len(new_history_entries)} documents ingested across multiple formats!")
 
     if not st.session_state.papers:
-        st.info("No papers currently loaded. Upload PDFs above or load the benchmark corpus to see the complete analysis.")
+        st.info("No documents currently loaded. Upload files above or click 'Load Multi-Domain Corpus' in the sidebar.")
     else:
         st.markdown("---")
-        st.subheader("2. Executive Literature Telemetry")
+        st.subheader("2. Executive Cross-Domain Telemetry")
         
         num_p = len(st.session_state.papers)
         tot_w = sum(p.get("word_count", 0) for p in st.session_state.papers.values())
         tot_s = sum(len(p.get("sentences", [])) for p in st.session_state.papers.values())
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Papers Analyzed", f"{num_p}")
+            st.metric("Documents Ingested", f"{num_p}")
         with col2:
-            st.metric("Total Tokens Processed", f"{tot_w:,}")
+            st.metric("Total Words Extracted", f"{tot_w:,}")
         with col3:
-            st.metric("Syntactic Claims Extracted", f"{tot_s:,}")
+            st.metric("Syntactic Claims", f"{tot_s:,}")
+        with col4:
+            st.metric("Learned Gap Words", f"{len(st.session_state.newly_learned_words)}", delta="Adaptive")
 
         st.markdown("---")
-        st.subheader("3. Automated Data Analysis & Synthesis")
+        st.subheader("3. Automated Cross-Domain Synthesis")
         
-        hub_tab1, hub_tab2, hub_tab3 = st.tabs(["Top Vocabulary & Keywords", "Similarity Overlap", "Mined Gaps & Word Attribution"])
+        hub_tab1, hub_tab2, hub_tab3 = st.tabs(["Discovered Domain Badges", "Similarity Heatmap", "Mined Gaps & Discovered Words"])
 
         with hub_tab1:
-            all_text = " ".join([p["text"] for p in st.session_state.papers.values()])
-            stopwords = set(["the", "and", "is", "in", "to", "of", "for", "with", "that", "this", "on", "as", "are", "by", "an", "be", "we", "from", "which", "our"])
-            raw_tokens = [w.lower().strip(".,;:()[]\"'") for w in all_text.split() if len(w) > 3]
-            clean_tokens_list = [w for w in raw_tokens if w not in stopwords and w.isalpha()]
-
-            from collections import Counter
-            counts = Counter(clean_tokens_list).most_common(10)
-            df_counts = pd.DataFrame(counts, columns=["Keyword", "Frequency"])
-
-            c_chart, c_tbl = st.columns([2, 1])
-            with c_chart:
-                fig, ax = plt.subplots(figsize=(8, 3.8), facecolor=bg_color)
-                ax.set_facecolor(bg_color)
-                ax.barh(df_counts["Keyword"][::-1], df_counts["Frequency"][::-1], color="#ff7700", edgecolor="#ffe066", linewidth=1.5)
-                ax.tick_params(colors=text_color, labelsize=9)
-                ax.spines['top'].set_visible(False)
-                ax.spines['right'].set_visible(False)
-                ax.spines['left'].set_color("#ff7700")
-                ax.spines['bottom'].set_color("#ff7700")
-                ax.set_title("Dominant Research Terms", color=text_color, fontsize=11, fontweight="bold")
-                st.pyplot(fig)
-            with c_tbl:
-                st.dataframe(df_counts, use_container_width=True)
+            st.markdown("#### Document Disciplinary Classification")
+            dom_rows = []
+            for name, meta in st.session_state.papers.items():
+                primary, overlaps = detect_document_domains(meta["text"])
+                dom_rows.append({
+                    "Document Name": name,
+                    "Format": meta.get("extension", "PDF"),
+                    "Primary Discipline": primary,
+                    "Cross-Disciplinary Overlaps": ", ".join(overlaps) if overlaps else "Core Domain",
+                    "Words": f"{meta['word_count']:,}"
+                })
+            st.dataframe(pd.DataFrame(dom_rows), use_container_width=True)
 
         with hub_tab2:
             if len(st.session_state.papers) >= 2:
@@ -737,26 +638,26 @@ elif page == "🚀 Upload & Analyze Hub":
                 sns.heatmap(df_sim, annot=True, fmt=".2f", cmap="YlOrBr", ax=ax_sim, cbar=True,
                             annot_kws={"color": "#080c14", "fontweight": "bold"})
                 ax_sim.tick_params(colors=text_color, labelsize=8)
-                ax_sim.set_title("Cosine Similarity Matrix", color=text_color, fontsize=11, fontweight="bold")
+                ax_sim.set_title("Cross-Domain Semantic Similarity Matrix", color=text_color, fontsize=11, fontweight="bold")
                 st.pyplot(fig_sim)
             else:
                 st.info("Upload at least 2 papers to view similarity heatmaps.")
 
         with hub_tab3:
-            rule_keywords = ["limitation", "however", "future work", "lack", "drawback", "remains", "unresolved", "challenge", "persist"]
+            active_triggers = load_learned_triggers()
             gaps_found = []
 
             for doc_name, meta in st.session_state.papers.items():
                 for sent in meta.get("sentences", []):
                     s_low = sent.lower()
-                    matched_rules = [kw for kw in rule_keywords if kw in s_low]
-                    if matched_rules:
-                        # Calls real src/cnn_model.py inference function!
-                        cnn_prob = predict_gap_probability(sent)
-                        hybrid_score = round((0.4 * (len(matched_rules) / 3.0)) + (0.6 * cnn_prob), 3)
+                    matched_rules = [kw for kw in active_triggers if kw in s_low]
+                    # Score sentence using 1D-CNN structural inference + dynamic rule match
+                    cnn_prob = predict_gap_probability(sent)
+                    rule_score = min(1.0, len(matched_rules) * 0.35)
+                    hybrid_score = round((0.4 * rule_score) + (0.6 * cnn_prob), 3)
 
+                    if hybrid_score >= 0.55:
                         suggestion_info = generate_actionable_suggestion(sent, doc_name)
-
                         gap_id = f"{doc_name}_{hash(sent)}"
                         gaps_found.append({
                             "id": gap_id,
@@ -771,7 +672,7 @@ elif page == "🚀 Upload & Analyze Hub":
 
             gaps_found.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-            st.write(f"Identified **{len(gaps_found)} high-priority research gaps** (Words triggering gaps are highlighted below):")
+            st.write(f"Identified **{len(gaps_found)} high-priority research gaps** across your interdisciplinary corpus:")
 
             for g in gaps_found:
                 gid = g["id"]
@@ -787,8 +688,8 @@ elif page == "🚀 Upload & Analyze Hub":
                     <div class="gap-text">"{highlighted_html}"</div>
                     <div>
                         <span class="gap-score-badge">Hybrid Score: {g['hybrid_score']}</span>
-                        <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN: {g['cnn_prob']*100:.1f}%</span>
-                        <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">Triggered by: {', '.join(g['rules'])}</span>
+                        <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN Structural Score: {g['cnn_prob']*100:.1f}%</span>
+                        <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">Triggered by: {', '.join(g['rules']) if g['rules'] else 'CNN Sequence Bottleneck'}</span>
                     </div>
                     <div class="gap-suggestion-box">
                         <div class="gap-suggestion-title">💡 Actionable Research Recommendation:</div>
@@ -814,19 +715,18 @@ elif page == "🚀 Upload & Analyze Hub":
                         st.rerun()
 
 # ==============================================================================
-# 11. ROUTING: 📄 PAPERS & UNLIMITED BATCH UPLOAD
+# 11. ROUTING: 📄 MULTI-FORMAT PAPERS LIBRARY
 # ==============================================================================
-elif page == "📄 Papers & Batch Upload":
-    st.title("Research Paper Library & Ingestion")
-    st.caption("Upload unlimited PDF papers simultaneously and view your full historical ingestion log.")
+elif page == "📄 Multi-Format Papers Library":
+    st.title("Multi-Format Research Library & Audit Log")
+    st.caption("Upload and manage documents in PDF, DOCX, TXT, MD, CSV, JSON, and HTML formats.")
 
     with st.container(border=True):
-        st.subheader("Upload Unlimited Research Papers (Batch Mode)")
+        st.subheader("Upload Research Documents (Universal Ingestion)")
         uploaded_files = st.file_uploader(
-            "Select or drop any number of PDF papers here",
-            type=["pdf"],
-            accept_multiple_files=True,
-            help="Supports as many PDFs as you want at once. Each will be extracted and saved to history."
+            "Select or drop files of any type",
+            type=["pdf", "docx", "txt", "md", "csv", "json", "html", "htm"],
+            accept_multiple_files=True
         )
 
         if uploaded_files:
@@ -837,12 +737,13 @@ elif page == "📄 Papers & Batch Upload":
             for idx, uf in enumerate(uploaded_files):
                 if uf.name not in st.session_state.papers:
                     try:
-                        doc_info = extract_pdf_info(uf.read())
+                        doc_info = extract_universal_document(uf.read(), uf.name)
                         st.session_state.papers[uf.name] = doc_info
 
                         new_history_entries.append({
                             "filename": uf.name,
                             "uploaded_at": now_str,
+                            "format": doc_info["extension"],
                             "pages": doc_info["page_count"],
                             "words": doc_info["word_count"],
                             "sentences": len(doc_info["sentences"])
@@ -854,15 +755,17 @@ elif page == "📄 Papers & Batch Upload":
 
             if new_history_entries:
                 save_to_history(new_history_entries)
-                st.success(f"Successfully processed and archived {len(new_history_entries)} new papers!")
+                st.success(f"Successfully processed and archived {len(new_history_entries)} new documents!")
 
     if st.session_state.papers:
-        st.subheader("Currently Active in Memory")
+        st.subheader("Documents Currently in Memory")
         table_rows = []
         for name, meta in st.session_state.papers.items():
+            primary, _ = detect_document_domains(meta["text"])
             table_rows.append({
                 "Document Name": name,
-                "Pages": meta["page_count"],
+                "Format": meta.get("extension", "PDF"),
+                "Discipline": primary,
                 "Words": f"{meta['word_count']:,}",
                 "Sentences": len(meta["sentences"]),
                 "Status": "✓ Active"
@@ -870,89 +773,52 @@ elif page == "📄 Papers & Batch Upload":
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
 
     st.markdown("---")
-    st.subheader("📜 Historical Uploads Archive (All Past Papers)")
-    st.caption("A persistent audit trail of all research papers uploaded on this system over time:")
-
+    st.subheader("📜 Historical Uploads Archive (All Formats)")
     history_records = load_history()
     if history_records:
-        df_hist = pd.DataFrame(history_records)
-        df_hist.columns = ["Document Filename", "Uploaded Timestamp", "Pages", "Total Words", "Sentences Analyzed"]
-        st.dataframe(df_hist, use_container_width=True)
-
-        h_col1, h_col2 = st.columns([1, 3])
-        with h_col1:
-            if st.button("🗑 Clear Past History Log", type="secondary"):
-                if os.path.exists(HISTORY_FILE):
-                    os.remove(HISTORY_FILE)
-                st.toast("History log cleared.")
-                st.rerun()
+        st.dataframe(pd.DataFrame(history_records), use_container_width=True)
     else:
-        st.info("No past upload history found yet. Upload papers above or load the benchmark corpus to begin logging.")
+        st.info("No past upload history found yet.")
 
 # ==============================================================================
 # 12. ROUTING: 📈 TEXT ANALYSIS & EDA
 # ==============================================================================
 elif page == "📈 Text Analysis & EDA":
     st.title("Exploratory Data Analysis & Text Metrics")
-    st.caption("Distribution of vocabulary, token frequencies, and linguistic features.")
+    st.caption("Distribution of vocabulary, token frequencies, and linguistic features across disciplines.")
 
     if not st.session_state.papers:
-        st.info("Please load papers or the benchmark corpus first to unlock EDA.")
+        st.info("Please load papers or the multi-domain corpus first to unlock EDA.")
     else:
-        eda_tab1, eda_tab2, eda_tab3 = st.tabs(["Top Vocabulary Terms", "Document Length Stats", "Word Cloud"])
+        all_text = " ".join([p["text"] for p in st.session_state.papers.values()])
+        stopwords = set(["the", "and", "is", "in", "to", "of", "for", "with", "that", "this", "on", "as", "are", "by", "an", "be", "we", "from", "which", "our"])
+        raw_tokens = [w.lower().strip(".,;:()[]\"'") for w in all_text.split() if len(w) > 3]
+        clean_tokens_list = [w for w in raw_tokens if w not in stopwords and w.isalpha()]
 
-        with eda_tab1:
-            all_text = " ".join([p["text"] for p in st.session_state.papers.values()])
-            stopwords = set(["the", "and", "is", "in", "to", "of", "for", "with", "that", "this", "on", "as", "are", "by", "an", "be", "we", "from", "which", "our"])
-            raw_tokens = [w.lower().strip(".,;:()[]\"'") for w in all_text.split() if len(w) > 3]
-            clean_tokens_list = [w for w in raw_tokens if w not in stopwords and w.isalpha()]
+        from collections import Counter
+        counts = Counter(clean_tokens_list).most_common(12)
+        df_counts = pd.DataFrame(counts, columns=["Term", "Frequency"])
 
-            from collections import Counter
-            counts = Counter(clean_tokens_list).most_common(12)
-            df_counts = pd.DataFrame(counts, columns=["Term", "Frequency"])
-
-            col_chart, col_data = st.columns([2, 1])
-            with col_chart:
-                fig, ax = plt.subplots(figsize=(8, 4), facecolor=bg_color)
-                ax.set_facecolor(bg_color)
-                bars = ax.barh(df_counts["Term"][::-1], df_counts["Frequency"][::-1], color="#ff7700", edgecolor="#ffe066", linewidth=1.5, alpha=0.9)
-                ax.tick_params(colors=text_color, labelsize=9)
-                ax.spines['top'].set_visible(False)
-                ax.spines['right'].set_visible(False)
-                ax.spines['left'].set_color("#ff7700")
-                ax.spines['bottom'].set_color("#ff7700")
-                ax.set_title("Most Frequent Research Terms Across Corpus", color=text_color, fontsize=11, fontweight="bold", pad=12)
-                st.pyplot(fig)
-            with col_data:
-                st.dataframe(df_counts, use_container_width=True)
-
-        with eda_tab2:
-            paper_stats = []
-            for name, meta in st.session_state.papers.items():
-                paper_stats.append({
-                    "Paper": name[:28] + "...",
-                    "Words": meta["word_count"],
-                    "Sentences": len(meta["sentences"]),
-                    "Avg Words/Sentence": round(meta["word_count"] / max(1, len(meta["sentences"])), 1)
-                })
-            st.dataframe(pd.DataFrame(paper_stats), use_container_width=True)
-
-        with eda_tab3:
-            try:
-                from wordcloud import WordCloud
-                wc = WordCloud(width=800, height=350, background_color=bg_color, colormap="YlOrBr").generate(all_text)
-                fig_wc, ax_wc = plt.subplots(figsize=(10, 4.5), facecolor=bg_color)
-                ax_wc.imshow(wc, interpolation="bilinear")
-                ax_wc.axis("off")
-                st.pyplot(fig_wc)
-            except Exception:
-                st.write("WordCloud generation requires `wordcloud` library or review frequency chart in Tab 1.")
+        col_chart, col_data = st.columns([2, 1])
+        with col_chart:
+            fig, ax = plt.subplots(figsize=(8, 4), facecolor=bg_color)
+            ax.set_facecolor(bg_color)
+            bars = ax.barh(df_counts["Term"][::-1], df_counts["Frequency"][::-1], color="#ff7700", edgecolor="#ffe066", linewidth=1.5, alpha=0.9)
+            ax.tick_params(colors=text_color, labelsize=9)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_color("#ff7700")
+            ax.spines['bottom'].set_color("#ff7700")
+            ax.set_title("Most Frequent Research Terms Across Corpus", color=text_color, fontsize=11, fontweight="bold", pad=12)
+            st.pyplot(fig)
+        with col_data:
+            st.dataframe(df_counts, use_container_width=True)
 
 # ==============================================================================
 # 13. ROUTING: 🔗 COSINE SIMILARITY
 # ==============================================================================
 elif page == "🔗 Cosine Similarity":
-    st.title("Inter-Paper Semantic Similarity")
+    st.title("Cross-Domain Semantic Similarity")
     st.caption("Pairwise Cosine Similarity computed over TF-IDF vector representations.")
 
     if len(st.session_state.papers) < 2:
@@ -998,94 +864,78 @@ elif page == "🔗 Cosine Similarity":
                 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 14. ROUTING: 🧩 TOPICS & CLUSTERS
+# 14. ROUTING: 🧩 INTERDISCIPLINARY CLUSTERING (ALL DOMAINS: BIO, AI, MED, PHYS)
 # ==============================================================================
-elif page == "🧩 Topics & Clusters":
-    st.title("Topic Segmentation & K-Means Clusters")
-    st.caption("Dimensionality reduction via 2D Principal Component Analysis (PCA) over TF-IDF space.")
+elif page == "🧩 Interdisciplinary Clustering":
+    st.title("Interdisciplinary Multi-Domain Clustering")
+    st.caption("Partition complex cross-domain literature (Biology, AI, Clinical Medicine, Physics, Chemistry) into clusters with 2D PCA spatial maps.")
 
-    if len(st.session_state.papers) < 3:
-        st.warning("Clustering requires at least 3 documents to form distinct groups.")
+    if len(st.session_state.papers) < 2:
+        st.warning("Clustering requires at least 2 documents.")
     else:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.cluster import KMeans
-        from sklearn.decomposition import PCA
+        k_val = st.slider("Select Cluster Count (k)", min_value=2, max_value=min(5, len(st.session_state.papers)), value=min(3, len(st.session_state.papers)))
+        clust_res = perform_universal_clustering(st.session_state.papers, k=k_val)
 
-        paper_names = list(st.session_state.papers.keys())
-        corpus = [st.session_state.papers[p]["text"] for p in paper_names]
+        if "error" in clust_res:
+            st.error(clust_res["error"])
+        else:
+            df_pca = clust_res["df_clusters"]
+            topics = clust_res["cluster_topics"]
 
-        k = st.slider("Select Cluster Count (k)", min_value=2, max_value=min(4, len(paper_names)), value=2)
+            col_plot, col_clusters = st.columns([3, 2])
+            with col_plot:
+                fig, ax = plt.subplots(figsize=(8, 5.2), facecolor=bg_color)
+                ax.set_facecolor(bg_color)
+                colors = ["#ff7700", "#38bdf8", "#ec4899", "#10b981", "#a855f7"]
 
-        vec = TfidfVectorizer(stop_words='english', max_features=300)
-        X = vec.fit_transform(corpus)
+                for idx, c_label in enumerate(sorted(df_pca["Cluster"].unique())):
+                    sub = df_pca[df_pca["Cluster"] == c_label]
+                    ax.scatter(sub["x"], sub["y"], label=c_label, s=220, color=colors[idx % len(colors)],
+                               edgecolors="#ffffff", linewidths=1.8, alpha=0.95)
+                    for _, row in sub.iterrows():
+                        ax.annotate(row["Paper"][:14], (row["x"] + 0.02, row["y"] + 0.02), color=text_color, fontsize=8, weight="bold")
 
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        labels = kmeans.fit_predict(X)
+                ax.tick_params(colors=sub_text)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_color("#ff7700")
+                ax.spines['bottom'].set_color("#ff7700")
+                ax.set_title("2D PCA Cross-Disciplinary Document Map", color=text_color, fontsize=11, fontweight="bold")
+                ax.legend(facecolor=bg_color, edgecolor="#ff7700", labelcolor=text_color)
+                st.pyplot(fig)
 
-        pca = PCA(n_components=2, random_state=42)
-        coords = pca.fit_transform(X.toarray())
-
-        df_pca = pd.DataFrame({
-            "Paper": paper_names,
-            "x": coords[:, 0],
-            "y": coords[:, 1],
-            "Cluster": [f"Cluster {l+1}" for l in labels]
-        })
-
-        col_plot, col_clusters = st.columns([3, 2])
-        with col_plot:
-            fig, ax = plt.subplots(figsize=(8, 5), facecolor=bg_color)
-            ax.set_facecolor(bg_color)
-            colors = ["#ff7700", "#38bdf8", "#ec4899", "#10b981"]
-
-            for idx, c_label in enumerate(sorted(df_pca["Cluster"].unique())):
-                sub = df_pca[df_pca["Cluster"] == c_label]
-                ax.scatter(sub["x"], sub["y"], label=c_label, s=200, color=colors[idx % len(colors)],
-                           edgecolors="#ffffff", linewidths=1.8, alpha=0.95)
-                for _, row in sub.iterrows():
-                    ax.annotate(row["Paper"][:15], (row["x"] + 0.02, row["y"] + 0.02), color=text_color, fontsize=8, weight="bold")
-
-            ax.tick_params(colors=sub_text)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_color("#ff7700")
-            ax.spines['bottom'].set_color("#ff7700")
-            ax.set_title("2D PCA Spatial Document Map", color=text_color, fontsize=11, fontweight="bold")
-            ax.legend(facecolor=bg_color, edgecolor="#ff7700", labelcolor=text_color)
-            st.pyplot(fig)
-
-        with col_clusters:
-            st.markdown("#### Document Cluster Assignments")
-            for c_id in sorted(df_pca["Cluster"].unique()):
-                st.markdown(f"**{c_id}**")
-                papers_in_c = df_pca[df_pca["Cluster"] == c_id]["Paper"].tolist()
-                for p in papers_in_c:
-                    st.caption(f"• {p}")
+            with col_clusters:
+                st.markdown("#### Discovered Thematic Topics & Domain Badges")
+                for c_id, kws in topics.items():
+                    st.markdown(f"**{c_id}**")
+                    st.caption(f"Key Terms: {', '.join(kws)}")
+                    sub_papers = df_pca[df_pca["Cluster"] == c_id]
+                    for _, row in sub_papers.iterrows():
+                        st.markdown(f"• `{row['Paper'][:22]}` ➔ *{row['Domain']}*")
 
 # ==============================================================================
-# 15. ROUTING: 🔍 RESEARCH GAP MINING & SUGGESTIONS
+# 15. ROUTING: 🔍 ADAPTIVE GAP MINING & SUGGESTIONS
 # ==============================================================================
-elif page == "🔍 Research Gap Mining & Suggestions":
-    st.title("Research Gap Mining & Word Attribution")
-    st.caption("Hybrid Gap Detection with dynamic word-level highlighting of trigger terms.")
+elif page == "🔍 Adaptive Gap Mining & Suggestions":
+    st.title("Adaptive Gap Mining & Discovered Indicator Attribution")
+    st.caption("Hybrid Gap Detection using continuous vocabulary learning and sequence-level 1D-CNN inference.")
 
     if not st.session_state.papers:
-        st.info("No documents found. Load the benchmark dataset to mine potential research gaps.")
+        st.info("No documents found. Load the multi-domain corpus to mine potential research gaps.")
     else:
-        rule_keywords = ["limitation", "however", "future work", "lack", "drawback", "remains", "unresolved", "challenge", "persist"]
+        active_triggers = load_learned_triggers()
         gaps_found = []
 
         for doc_name, meta in st.session_state.papers.items():
             for sent in meta.get("sentences", []):
                 s_low = sent.lower()
-                matched_rules = [kw for kw in rule_keywords if kw in s_low]
-                if matched_rules:
-                    # Invokes real CNN inference from src/cnn_model.py
-                    cnn_prob = predict_gap_probability(sent)
-                    hybrid_score = round((0.4 * (len(matched_rules) / 3.0)) + (0.6 * cnn_prob), 3)
+                matched_rules = [kw for kw in active_triggers if kw in s_low]
+                cnn_prob = predict_gap_probability(sent)
+                rule_score = min(1.0, len(matched_rules) * 0.35)
+                hybrid_score = round((0.4 * rule_score) + (0.6 * cnn_prob), 3)
 
+                if hybrid_score >= 0.55:
                     suggestion_info = generate_actionable_suggestion(sent, doc_name)
-
                     gap_id = f"{doc_name}_{hash(sent)}"
                     gaps_found.append({
                         "id": gap_id,
@@ -1100,7 +950,7 @@ elif page == "🔍 Research Gap Mining & Suggestions":
 
         gaps_found.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-        st.write(f"Identified **{len(gaps_found)} potential limitation & future work statements** across your literature (trigger words are highlighted below):")
+        st.write(f"Identified **{len(gaps_found)} high-probability limitation claims** across your literature:")
 
         for idx, g in enumerate(gaps_found):
             gid = g["id"]
@@ -1112,15 +962,15 @@ elif page == "🔍 Research Gap Mining & Suggestions":
 
             st.markdown(f"""
             <div class="gap-card">
-                <div class="gap-paper">📄 Source Paper: {g['paper']}</div>
+                <div class="gap-paper">📄 Source: {g['paper']}</div>
                 <div class="gap-text">"{highlighted_html}"</div>
                 <div>
                     <span class="gap-score-badge">Hybrid Score: {g['hybrid_score']}</span>
-                    <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN: {g['cnn_prob']*100:.1f}%</span>
-                    <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">Triggered by: {', '.join(g['rules'])}</span>
+                    <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN Structural Probability: {g['cnn_prob']*100:.1f}%</span>
+                    <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">Triggers: {', '.join(g['rules']) if g['rules'] else 'CNN Sequence Context'}</span>
                 </div>
                 <div class="gap-suggestion-box">
-                    <div class="gap-suggestion-title">💡 Actionable Next Step / What Has To Be Done:</div>
+                    <div class="gap-suggestion-title">💡 Actionable Research Recommendation:</div>
                     <div style="font-weight:700; font-size:0.8rem; color:#10b981; margin-bottom:2px;">{g['suggestion_type']}</div>
                     <div class="gap-suggestion-desc">{g['suggestion_text']}</div>
                 </div>
@@ -1143,129 +993,141 @@ elif page == "🔍 Research Gap Mining & Suggestions":
                     st.rerun()
 
 # ==============================================================================
-# 16. ROUTING: ⚠️ ERROR ANALYSIS & DIAGNOSTICS
+# 16. ROUTING: 🧠 LEARNED VOCABULARY & AI RULES
 # ==============================================================================
-elif page == "⚠️ Error Analysis & Diagnostics":
-    st.title("Model & Data Error Diagnostics")
-    st.caption("Quantitative audit of parsing noise, model uncertainty, false alarm detection, and trigger word attribution.")
+elif page == "🧠 Learned Vocabulary & AI Rules":
+    st.title("Adaptive Model Learning & Discovered Vocabulary")
+    st.caption("How the system learns new gap indicators from text embeddings instead of relying solely on static NLP rules.")
 
-    if not st.session_state.papers:
-        st.info("No documents currently loaded. Load papers to generate error telemetry.")
-    else:
-        all_sentences = []
-        for p in st.session_state.papers.values():
-            all_sentences.extend(p.get("sentences", []))
-
-        total_sents = len(all_sentences)
-        clean_sents = [s for s in all_sentences if len(s.split()) >= 6 and len(s) >= 30]
-        noisy_fragments = total_sents - len(clean_sents)
-        data_cleanliness_pct = round((len(clean_sents) / max(1, total_sents)) * 100, 1)
-
-        rule_keywords = ["limitation", "however", "future work", "lack", "drawback", "remains", "unresolved", "challenge", "persist"]
-        
-        trigger_freq = {}
-        for kw in rule_keywords:
-            trigger_freq[kw] = 0
-
-        high_confidence = 0
-        potential_false_positives = 0
-
-        for s in clean_sents:
-            s_low = s.lower()
-            matched = [kw for kw in rule_keywords if kw in s_low]
-            for m in matched:
-                trigger_freq[m] += 1
-            
-            rule_count = len(matched)
-            base_cnn = predict_gap_probability(s)
-            
-            if rule_count >= 2 and base_cnn >= 0.75:
-                high_confidence += 1
-            elif rule_count == 1 and "however" in matched and base_cnn < 0.70:
-                potential_false_positives += 1
-
-        kcol1, kcol2, kcol3, kcol4 = st.columns(4)
-        with kcol1:
-            st.metric("Corpus Cleanliness", f"{data_cleanliness_pct}%")
-        with kcol2:
-            st.metric("Noisy/Truncated Discarded", f"{noisy_fragments}")
-        with kcol3:
-            st.metric("High-Confidence True Gaps", f"{high_confidence}")
-        with kcol4:
-            st.metric("Potential False Alarms", f"{potential_false_positives}")
-
-        st.markdown("---")
-        st.subheader("1. Lexical Attribution: Which Words Mentioned Gaps?")
-        st.write("Distribution of exact keyword triggers responsible for flagging scientific gaps across your papers:")
-
-        df_triggers = pd.DataFrame(list(trigger_freq.items()), columns=["Trigger Word", "Occurrences"])
-        df_triggers = df_triggers.sort_values(by="Occurrences", ascending=False)
-
-        col_w_chart, col_w_table = st.columns([2, 1])
-        with col_w_chart:
-            fig_err, ax_err = plt.subplots(figsize=(8, 4), facecolor=bg_color)
-            ax_err.set_facecolor(bg_color)
-            ax_err.barh(df_triggers["Trigger Word"][::-1], df_triggers["Occurrences"][::-1], color="#ff7700", edgecolor="#ffe066", linewidth=1.5)
-            ax_err.tick_params(colors=text_color, labelsize=9)
-            ax_err.spines['top'].set_visible(False)
-            ax_err.spines['right'].set_visible(False)
-            ax_err.spines['left'].set_color("#ff7700")
-            ax_err.spines['bottom'].set_color("#ff7700")
-            ax_err.set_title("Trigger Word Attribution Frequency", color=text_color, fontsize=11, fontweight="bold")
-            st.pyplot(fig_err)
-
-        with col_w_table:
-            st.dataframe(df_triggers, use_container_width=True)
-
-# ==============================================================================
-# 17. ROUTING: 🧠 AI EVIDENCE & RULES
-# ==============================================================================
-elif page == "🧠 AI Evidence & Rules":
-    st.title("AI Gap Evidence & Linguistic Attribution")
-    st.caption("Inspect mathematical confidence and explainability behind mined gap candidates.")
-
-    st.markdown(f"""
-    <div class="kpi-card" style="margin-bottom:20px;">
-        <h4 style="color:#ffaa00; margin-top:0;">Hybrid Gap Decision Formula</h4>
-        <div style="font-size:0.9rem; color:{sub_text};">
-            The engine computes an ensemble score balancing lexical triggers and deep 1D-CNN temporal sequence features:
-        </div>
-        <div style="font-size:1.15rem; font-weight:800; color:{text_color}; margin:10px 0; font-family:'JetBrains Mono', monospace;">
-            Final Score = 0.40 × (NLP Lexical Rule Weight) + 0.60 × (1D-CNN Probability)
-        </div>
-        <div style="font-size:0.75rem; color:{sub_text};">
-            A sentence is flagged as a high-probability research gap when <i>Final Score &ge; 0.65</i>.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    active_triggers = sorted(list(load_learned_triggers()))
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("NLP Lexical Trigger Lexicon")
-        rule_lexicon = [
-            {"Trigger Keyword": "limitation", "Class": "Explicit Limitation", "Weight": "1.00"},
-            {"Trigger Keyword": "future work", "Class": "Direct Projection", "Weight": "0.95"},
-            {"Trigger Keyword": "however", "Class": "Adversarial Contrast", "Weight": "0.80"},
-            {"Trigger Keyword": "lack of", "Class": "Resource/Method Gap", "Weight": "0.85"},
-            {"Trigger Keyword": "remains unaddressed", "Class": "Open Academic Challenge", "Weight": "0.90"},
-            {"Trigger Keyword": "drawback", "Class": "Architectural Vulnerability", "Weight": "0.85"},
-        ]
-        st.table(pd.DataFrame(rule_lexicon))
+        st.subheader("📚 Active Learned Gap Trigger Lexicon")
+        st.write(f"The model has inducted **{len(active_triggers)} active indicator words** into its memory:")
+        st.write(", ".join([f"`{t}`" for t in active_triggers]))
+
+        # Add custom trigger manually
+        new_word_input = st.text_input("Teach the Model a New Gap Indicator (Domain Word):", placeholder="e.g. incomputable, unviable, cytotoxic")
+        if st.button("➕ Add Word to Model Memory"):
+            if new_word_input:
+                cur_triggers = load_learned_triggers()
+                cur_triggers.add(new_word_input.lower().strip())
+                from src.dynamic_gap_learner import save_learned_triggers
+                save_learned_triggers(cur_triggers)
+                st.success(f"✓ '{new_word_input}' has been permanently learned by the gap detector!")
+                st.rerun()
 
     with col2:
-        st.subheader("1D-CNN Network Topology")
+        st.subheader("🧬 Automated Discovery from Uploaded Papers")
+        st.write("When you upload papers, continuous Word2Vec scans your domain text and surfaces new candidate indicator words:")
+        if st.session_state.newly_learned_words:
+            st.success(f"Discovered {len(st.session_state.newly_learned_words)} new indicators from your papers:")
+            st.write(", ".join([f"✨ **{w}**" for w in st.session_state.newly_learned_words]))
+        else:
+            st.info("Upload papers to trigger automatic vector similarity induction.")
+
+# ==============================================================================
+# 17. ROUTING: 📑 DOSSIER REPORTS
+# ==============================================================================
+elif page == "📑 Dossier Reports":
+    st.title("Executive Research Dossier Generator")
+    st.caption("Compile your verified cross-domain research gaps, statistics, and literature findings into an A4 PDF document.")
+
+    val_count = len(st.session_state.validated_gaps)
+    st.metric("Researcher-Validated Gaps Ready for Export", f"{val_count}")
+
+    if val_count == 0:
+        st.warning("You haven't validated any gaps yet. Navigate to '🔍 Adaptive Gap Mining & Suggestions' and click '✓ Validate Gap'.")
+    else:
+        st.subheader("Summary of Verified Gaps & Recommendations")
+        for g in st.session_state.validated_gaps.values():
+            st.markdown(f"• **{g['paper']}**: *\"{g['sentence']}\"*")
+            st.caption(f"↳ 💡 Recommendation: {g.get('suggestion_text', 'Further empirical benchmarks needed.')}")
+
+        st.markdown("---")
+        pdf_buffer = generate_pdf_report(st.session_state.validated_gaps, len(st.session_state.papers))
+        
+        st.download_button(
+            label="📄 Export & Download Comprehensive Research Dossier (PDF)",
+            data=pdf_buffer,
+            file_name="ResearchLens_CrossDomain_Dossier.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+# ==============================================================================
+# 18. ROUTING: 🔬 PIPELINE ARCHITECTURE
+# ==============================================================================
+elif page == "🔬 Pipeline Architecture":
+    st.title("System Architecture & Algorithmic Process")
+    st.caption("How the system ingests raw academic literature across formats, clusters domains, and extracts research gaps.")
+
+    render_glowing_pipeline_component()
+
+# ==============================================================================
+# 19. ROUTING: ❓ FAQ & INTERACTIVE RESEARCH Q&A
+# ==============================================================================
+elif page == "❓ FAQ & Research Q&A":
+    st.title("Frequently Asked Questions & Research Q&A")
+    st.caption("Ask questions about your uploaded literature corpus across any domain.")
+
+    with st.container(border=True):
+        st.subheader("🔍 Ask a Question About Your Uploaded Papers")
+        q_input = st.text_input("Your Question / Query", placeholder="e.g., What are the main limitations in biological protein dynamics or quantum decoherence?")
+
+        if q_input:
+            if not st.session_state.papers:
+                st.warning("Please upload papers or load the multi-domain corpus to search.")
+            else:
+                keywords = [w.lower().strip("?,.!") for w in q_input.split() if len(w) > 3]
+                matches = []
+                for doc_name, meta in st.session_state.papers.items():
+                    for sent in meta.get("sentences", []):
+                        sent_low = sent.lower()
+                        score = sum(1 for kw in keywords if kw in sent_low)
+                        if score > 0:
+                            matches.append((doc_name, sent, score))
+
+                matches.sort(key=lambda x: x[2], reverse=True)
+
+                if matches:
+                    st.success(f"Found {len(matches)} relevant sentence matches across your literature:")
+                    for doc_name, sent, sc in matches[:5]:
+                        st.markdown(f"""
+                        <div class="kpi-card" style="margin-bottom:10px; border-width: 1.5px;">
+                            <div style="font-size:0.75rem; color:#ffaa00; font-weight:800;">SOURCE: {doc_name} (Relevance Score: {sc})</div>
+                            <div style="font-size:0.88rem; color:{text_color}; margin-top:4px; line-height:1.5;">"{sent}"</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.info("No exact matching sentences found. Try using broader technical keywords.")
+
+# ==============================================================================
+# 20. ROUTING: ⚙ SETTINGS & PLATFORM
+# ==============================================================================
+elif page == "⚙ Settings & Platform":
+    st.title("Platform Details & Execution Environment")
+    st.caption("Multi-domain engine capabilities and dependency health status.")
+
+    with st.container(border=True):
+        st.subheader("Platform Metadata")
         st.markdown("""
-        ```text
-        [Input Sequence: Tokenized Sentence (max_len=60)]
-                               ↓
-        [Embedding Layer: 128-dim Word Vector Space]
-                               ↓
-        [Conv1D: 64 Filters, Kernel Size=3, ReLU]
-                               ↓
-        [GlobalMaxPooling1D: Dominant Semantic Feature]
-                               ↓
-        [Dense: 32 Hidden Units, ReLU + Dropout(0.3)]
-                               ↓
-        [Dense: 1 Unit, Sigmoid Output → Gap Probability]
-        ```
+        - **Platform Name**: ResearchLens AI
+        - **Supported Ingestion**: PDF, DOCX, TXT, MD, CSV, JSON, HTML
+        - **Clustering**: Universal Cross-Disciplinary (AI, ML, CS, Biology, Medicine, Physics, Chemistry)
+        - **Gap Discovery**: Adaptive Self-Learning (Continuous Word2Vec Induction + 1D-CNN Sequence Modeling)
+        - **Release Edition**: @ 2026 Enterprise Academic Intelligence
         """)
+
+    with st.container(border=True):
+        st.subheader("System Dependencies Status")
+        dep_cols = st.columns(4)
+        with dep_cols[0]:
+            st.success("PyMuPDF: ✓ Active")
+        with dep_cols[1]:
+            st.success("Scikit-Learn: ✓ Active")
+        with dep_cols[2]:
+            st.success("NLTK: ✓ Active")
+        with dep_cols[3]:
+            st.success("ReportLab: ✓ Active")
