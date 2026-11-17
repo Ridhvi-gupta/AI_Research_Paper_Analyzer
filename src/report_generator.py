@@ -5,10 +5,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 
 def generate_pdf_report(validated_gaps: dict, papers_count: int) -> io.BytesIO:
-    """
-    Compiles verified research gaps, citations, and actionable suggestions
-    into a structured publication-grade A4 PDF Dossier.
-    """
+    """Compiles validated research findings into an A4 PDF Dossier."""
     buffer = io.BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -19,17 +16,17 @@ def generate_pdf_report(validated_gaps: dict, papers_count: int) -> io.BytesIO:
     
     p.setFillColor(colors.HexColor("#ffaa00"))
     p.setFont("Helvetica-Bold", 18)
-    p.drawString(45, height - 42, "RESEARCHLENS AI - EXECUTIVE GAP DOSSIER")
+    p.drawString(45, height - 42, "RESEARCHLENS AI - CROSS-DOMAIN GAP DOSSIER")
     
     p.setFillColor(colors.white)
     p.setFont("Helvetica", 9)
-    p.drawString(45, height - 60, f"Generated automatically on {time.strftime('%Y-%m-%d %H:%M')} | Total Papers Analyzed: {papers_count}")
-    p.drawString(45, height - 74, "Course: CSET214 Data Analysis Using Python | Research Intelligence Report")
+    p.drawString(45, height - 60, f"Generated automatically on {time.strftime('%Y-%m-%d %H:%M')} | Documents Analyzed: {papers_count}")
+    p.drawString(45, height - 74, "Multi-Format & Adaptive Intelligence Dossier | Release @ 2026")
 
     y = height - 120
     p.setFillColor(colors.HexColor("#0f172a"))
     p.setFont("Helvetica-Bold", 13)
-    p.drawString(45, y, "Verified Research Gaps & Recommended Solutions:")
+    p.drawString(45, y, "Verified Research Gaps & Actionable Recommendations:")
     y -= 25
 
     if not validated_gaps:
@@ -41,10 +38,10 @@ def generate_pdf_report(validated_gaps: dict, papers_count: int) -> io.BytesIO:
                 p.showPage()
                 y = height - 60
 
-            # Source Paper & Score
+            # Source Document & Score
             p.setFillColor(colors.HexColor("#b45309"))
             p.setFont("Helvetica-Bold", 10)
-            p.drawString(45, y, f"[{idx}] Source Paper: {g['paper']}")
+            p.drawString(45, y, f"[{idx}] Source Document: {g['paper']}")
             
             p.setFillColor(colors.HexColor("#475569"))
             p.setFont("Helvetica-Bold", 9)
@@ -55,7 +52,6 @@ def generate_pdf_report(validated_gaps: dict, papers_count: int) -> io.BytesIO:
             p.setFillColor(colors.black)
             p.setFont("Helvetica-Oblique", 9)
             sent_text = g['sentence']
-            # Wrap long sentences
             if len(sent_text) > 105:
                 p.drawString(55, y, f"\"{sent_text[:100]}...")
                 y -= 13
@@ -75,7 +71,6 @@ def generate_pdf_report(validated_gaps: dict, papers_count: int) -> io.BytesIO:
             p.drawString(60, y, f"{s_text[:115]}")
             y -= 24
 
-            # Subtle Divider Line
             p.setStrokeColor(colors.HexColor("#e2e8f0"))
             p.line(45, y + 8, width - 45, y + 8)
 
