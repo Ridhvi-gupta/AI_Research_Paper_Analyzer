@@ -2,13 +2,17 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import io
-import re
 import json
-import time
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Backend Module Imports
+from src.pdf_extractor import extract_pdf_info
+from src.preprocessing import clean_academic_text, segment_sentences
+from src.cnn_model import predict_gap_probability
+from src.word2vec import train_word2vec_model, expand_keywords_with_word2vec
+from src.report_generator import generate_pdf_report
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
@@ -54,7 +58,7 @@ if "rejected_gaps" not in st.session_state:
     st.session_state.rejected_gaps = set()
 
 # ==============================================================================
-# 3. DYNAMIC THEME STYLING WITH EXACT GLOWING PIPELINE BOXES
+# 3. DYNAMIC THEME STYLING WITH GLOWING PIPELINE BOXES
 # ==============================================================================
 is_dark = (st.session_state.theme_mode == "Dark")
 
@@ -95,7 +99,6 @@ html, body, [class*="css"] {{
     border-right: 2px solid {border_accent}44 !important;
 }}
 
-/* Glowing Pipeline Boxes */
 .pipeline-screenshot-container {{
     display: flex;
     align-items: center;
@@ -154,7 +157,6 @@ html, body, [class*="css"] {{
     filter: drop-shadow(0 0 8px #ff7700);
 }}
 
-/* Instructions Card */
 .step-instruction-card {{
     background: {card_bg};
     border-left: 5px solid #ff7700;
@@ -292,6 +294,8 @@ with top_h2:
 # ==============================================================================
 # 5. TRIGGER WORD HIGHLIGHTER & SUGGESTION GENERATOR
 # ==============================================================================
+import re
+
 def highlight_trigger_words(sentence, trigger_words):
     highlighted = sentence
     for tw in sorted(trigger_words, key=len, reverse=True):
@@ -395,8 +399,8 @@ def load_benchmark_corpus():
     history_entries = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     for fname, text in benchmark_docs.items():
+        sents = segment_sentences(text)
         words = text.split()
-        sents = [s.strip() for s in text.split(".") if len(s.strip()) > 15]
         st.session_state.papers[fname] = {
             "text": text,
             "page_count": np.random.randint(8, 16),
@@ -412,7 +416,7 @@ def load_benchmark_corpus():
             "sentences": len(sents)
         })
     save_to_history(history_entries)
-    st.toast("⚡ Benchmark Corpus Loaded with Glowing Pipeline Active!", icon="✨")
+    st.toast("⚡ Benchmark Corpus Loaded with Real Backend Connected!", icon="✨")
 
 # ==============================================================================
 # 7. GLOWING PIPELINE & INSTRUCTIONS COMPONENT
@@ -480,8 +484,8 @@ def render_step_by_step_instructions():
             <span class="step-badge">Stage 1 Execution Guide</span>
             <h4 style="color:#ffaa00; margin-top:2px;">Step 1: PDF Ingestion & Streaming</h4>
             <p><b>How to do it:</b> Go to the <b>📄 Papers & Batch Upload</b> page in the sidebar. Drag and drop any number of research PDF files into the upload box (or click <i>'⚡ Load Benchmark Papers'</i>).</p>
-            <p><b>What the code does:</b> Uses <code>pymupdf</code> to parse the binary streams of your PDFs, extracts pages without losing formatting, and counts raw tokens.</p>
-            <p><b>Output:</b> Raw plain text indexed with page counts and word statistics.</p>
+            <p><b>What the code does:</b> Uses <code>pymupdf</code> to parse the binary streams of your PDFs, extracts pages without losing formatting, and strips the bibliography section to avoid false citations.</p>
+            <p><b>Output:</b> Cleaned text indexed with page counts and word statistics.</p>
         </div>
         """, unsafe_allow_html=True)
     elif "Stage 2" in stage_choice:
@@ -490,7 +494,7 @@ def render_step_by_step_instructions():
             <span class="step-badge">Stage 2 Execution Guide</span>
             <h4 style="color:#ffaa00; margin-top:2px;">Step 2: NLP Cleaning & Lemmatization</h4>
             <p><b>How to do it:</b> Handled automatically after upload! Navigate to <b>📈 Text Analysis & EDA</b> to inspect the extracted vocabulary.</p>
-            <p><b>What the code does:</b> Uses NLTK's <code>sent_tokenize</code> to segment dense paragraphs into standalone sentences, strips non-informative stopwords (<i>'the'</i>, <i>'and'</i>), and runs WordNet Lemmatization (<i>'experiments'</i> → <i>'experiment'</i>).</p>
+            <p><b>What the code does:</b> Uses <code>clean_academic_text</code> to remove numeric citations <code>[1, 2]</code> and author citations, segments into clean sentences, and runs WordNet Lemmatization.</p>
             <p><b>Output:</b> Cleaned sentence arrays ready for mathematical modeling.</p>
         </div>
         """, unsafe_allow_html=True)
@@ -522,7 +526,7 @@ def render_step_by_step_instructions():
             <span class="step-badge">Stage 5 Execution Guide</span>
             <h4 style="color:#ffaa00; margin-top:2px;">Step 5: Hybrid Gap Mining & Recommendations</h4>
             <p><b>How to do it:</b> Click <b>🔍 Research Gap Mining & Suggestions</b>. Read the highlighted limitation sentences, review the 💡 <i>'What Has To Be Done'</i> suggestions, and click <b>✓ Validate Gap</b> or <b>✕ Reject</b>.</p>
-            <p><b>What the code does:</b> Uses an ensemble scoring formula:
+            <p><b>What the code does:</b> Uses the real 1D-CNN model in <code>src/cnn_model.py</code> combined with lexical concession rules:
             $$\\text{Final Score} = 0.40 \\times (\\text{NLP Rules}) + 0.60 \\times (\\text{1D-CNN Probability})$$
             and automatically generates categorized mitigation recommendations.</p>
             <p><b>Output:</b> Prioritized list of verified open scientific problems.</p>
@@ -534,7 +538,7 @@ def render_step_by_step_instructions():
             <span class="step-badge">Stage 6 Execution Guide</span>
             <h4 style="color:#ffaa00; margin-top:2px;">Step 6: Executive Dossier Export</h4>
             <p><b>How to do it:</b> Head to <b>📑 Dossier Reports</b> in the sidebar and click the <b>📄 Export Comprehensive Research Dossier (PDF)</b> button.</p>
-            <p><b>What the code does:</b> Uses the ReportLab engine to compile all your researcher-validated gaps, paper source citations, confidence scores, and future recommendations into a structured PDF.</p>
+            <p><b>What the code does:</b> Calls <code>generate_pdf_report</code> in <code>src/report_generator.py</code> to compile all your researcher-validated gaps, paper source citations, confidence scores, and future recommendations into a structured PDF.</p>
             <p><b>Output:</b> A downloadable, publication-grade <code>ResearchLens_Gap_Dossier.pdf</code> file.</p>
         </div>
         """, unsafe_allow_html=True)
@@ -587,16 +591,14 @@ with st.sidebar:
             st.session_state.rejected_gaps = set()
             st.rerun()
 
-    # Clean Brand Footer
     st.markdown("""
     <div style="font-size:0.75rem; color:#64748b; margin-top:22px; text-align:center; font-weight:600; letter-spacing:0.04em;">
         ResearchLens AI @ 2026
     </div>
     """, unsafe_allow_html=True)
 
-
 # ==============================================================================
-# 9. ROUTING: 🏠 HOME PAGE (WITH GLOWING PIPELINE & STEPS)
+# 9. ROUTING: 🏠 HOME PAGE
 # ==============================================================================
 if page == "🏠 Home":
     st.markdown(f"""
@@ -621,13 +623,8 @@ if page == "🏠 Home":
             st.info("Head over to '🚀 Upload & Analyze Hub' in the sidebar to run an automated scan!")
 
     st.markdown("---")
-    
-    # Glowing Pipeline matching user screenshot exactly!
     render_glowing_pipeline_component()
-    
-    # Step-by-Step Guide
     render_step_by_step_instructions()
-
 
 # ==============================================================================
 # 10. ROUTING: 🚀 UPLOAD & ANALYZE HUB
@@ -653,28 +650,16 @@ elif page == "🚀 Upload & Analyze Hub":
             for idx, uf in enumerate(uploaded_files):
                 if uf.name not in st.session_state.papers:
                     try:
-                        import pymupdf
-                        doc = pymupdf.open(stream=uf.read(), filetype="pdf")
-                        full_text = ""
-                        for p in doc:
-                            full_text += p.get_text() + "\n"
-                        words = full_text.split()
-                        sents = [s.strip() for s in full_text.split(".") if len(s.strip()) > 15]
-
-                        st.session_state.papers[uf.name] = {
-                            "text": full_text,
-                            "page_count": len(doc),
-                            "word_count": len(words),
-                            "char_count": len(full_text),
-                            "sentences": sents
-                        }
+                        # Calls src/pdf_extractor.py with citation stripping and section cutoff
+                        doc_info = extract_pdf_info(uf.read())
+                        st.session_state.papers[uf.name] = doc_info
 
                         new_history_entries.append({
                             "filename": uf.name,
                             "uploaded_at": now_str,
-                            "pages": len(doc),
-                            "words": len(words),
-                            "sentences": len(sents)
+                            "pages": doc_info["page_count"],
+                            "words": doc_info["word_count"],
+                            "sentences": len(doc_info["sentences"])
                         })
                     except Exception as err:
                         st.error(f"Error parsing {uf.name}: {err}")
@@ -766,8 +751,8 @@ elif page == "🚀 Upload & Analyze Hub":
                     s_low = sent.lower()
                     matched_rules = [kw for kw in rule_keywords if kw in s_low]
                     if matched_rules:
-                        base_cnn = 0.65 + (len(matched_rules) * 0.1) + (0.08 if "future" in s_low or "limitation" in s_low else 0.0)
-                        cnn_prob = min(0.98, round(base_cnn, 3))
+                        # Calls real src/cnn_model.py inference function!
+                        cnn_prob = predict_gap_probability(sent)
                         hybrid_score = round((0.4 * (len(matched_rules) / 3.0)) + (0.6 * cnn_prob), 3)
 
                         suggestion_info = generate_actionable_suggestion(sent, doc_name)
@@ -828,7 +813,6 @@ elif page == "🚀 Upload & Analyze Hub":
                             del st.session_state.validated_gaps[gid]
                         st.rerun()
 
-
 # ==============================================================================
 # 11. ROUTING: 📄 PAPERS & UNLIMITED BATCH UPLOAD
 # ==============================================================================
@@ -853,28 +837,15 @@ elif page == "📄 Papers & Batch Upload":
             for idx, uf in enumerate(uploaded_files):
                 if uf.name not in st.session_state.papers:
                     try:
-                        import pymupdf
-                        doc = pymupdf.open(stream=uf.read(), filetype="pdf")
-                        full_text = ""
-                        for p in doc:
-                            full_text += p.get_text() + "\n"
-                        words = full_text.split()
-                        sents = [s.strip() for s in full_text.split(".") if len(s.strip()) > 15]
-
-                        st.session_state.papers[uf.name] = {
-                            "text": full_text,
-                            "page_count": len(doc),
-                            "word_count": len(words),
-                            "char_count": len(full_text),
-                            "sentences": sents
-                        }
+                        doc_info = extract_pdf_info(uf.read())
+                        st.session_state.papers[uf.name] = doc_info
 
                         new_history_entries.append({
                             "filename": uf.name,
                             "uploaded_at": now_str,
-                            "pages": len(doc),
-                            "words": len(words),
-                            "sentences": len(sents)
+                            "pages": doc_info["page_count"],
+                            "words": doc_info["word_count"],
+                            "sentences": len(doc_info["sentences"])
                         })
                     except Exception as err:
                         st.error(f"Error extracting {uf.name}: {err}")
@@ -917,7 +888,6 @@ elif page == "📄 Papers & Batch Upload":
                 st.rerun()
     else:
         st.info("No past upload history found yet. Upload papers above or load the benchmark corpus to begin logging.")
-
 
 # ==============================================================================
 # 12. ROUTING: 📈 TEXT ANALYSIS & EDA
@@ -978,7 +948,6 @@ elif page == "📈 Text Analysis & EDA":
             except Exception:
                 st.write("WordCloud generation requires `wordcloud` library or review frequency chart in Tab 1.")
 
-
 # ==============================================================================
 # 13. ROUTING: 🔗 COSINE SIMILARITY
 # ==============================================================================
@@ -1027,7 +996,6 @@ elif page == "🔗 Cosine Similarity":
                     <div style="font-size:0.75rem; color:{sub_text};">↔ {p2}</div>
                 </div>
                 """, unsafe_allow_html=True)
-
 
 # ==============================================================================
 # 14. ROUTING: 🧩 TOPICS & CLUSTERS
@@ -1094,7 +1062,6 @@ elif page == "🧩 Topics & Clusters":
                 for p in papers_in_c:
                     st.caption(f"• {p}")
 
-
 # ==============================================================================
 # 15. ROUTING: 🔍 RESEARCH GAP MINING & SUGGESTIONS
 # ==============================================================================
@@ -1105,16 +1072,16 @@ elif page == "🔍 Research Gap Mining & Suggestions":
     if not st.session_state.papers:
         st.info("No documents found. Load the benchmark dataset to mine potential research gaps.")
     else:
-        gaps_found = []
         rule_keywords = ["limitation", "however", "future work", "lack", "drawback", "remains", "unresolved", "challenge", "persist"]
+        gaps_found = []
 
         for doc_name, meta in st.session_state.papers.items():
             for sent in meta.get("sentences", []):
                 s_low = sent.lower()
                 matched_rules = [kw for kw in rule_keywords if kw in s_low]
                 if matched_rules:
-                    base_cnn = 0.65 + (len(matched_rules) * 0.1) + (0.08 if "future" in s_low or "limitation" in s_low else 0.0)
-                    cnn_prob = min(0.98, round(base_cnn, 3))
+                    # Invokes real CNN inference from src/cnn_model.py
+                    cnn_prob = predict_gap_probability(sent)
                     hybrid_score = round((0.4 * (len(matched_rules) / 3.0)) + (0.6 * cnn_prob), 3)
 
                     suggestion_info = generate_actionable_suggestion(sent, doc_name)
@@ -1175,7 +1142,6 @@ elif page == "🔍 Research Gap Mining & Suggestions":
                         del st.session_state.validated_gaps[gid]
                     st.rerun()
 
-
 # ==============================================================================
 # 16. ROUTING: ⚠️ ERROR ANALYSIS & DIAGNOSTICS
 # ==============================================================================
@@ -1211,7 +1177,7 @@ elif page == "⚠️ Error Analysis & Diagnostics":
                 trigger_freq[m] += 1
             
             rule_count = len(matched)
-            base_cnn = 0.65 + (rule_count * 0.1) if rule_count > 0 else 0.2
+            base_cnn = predict_gap_probability(s)
             
             if rule_count >= 2 and base_cnn >= 0.75:
                 high_confidence += 1
@@ -1250,7 +1216,6 @@ elif page == "⚠️ Error Analysis & Diagnostics":
 
         with col_w_table:
             st.dataframe(df_triggers, use_container_width=True)
-
 
 # ==============================================================================
 # 17. ROUTING: 🧠 AI EVIDENCE & RULES
@@ -1304,157 +1269,3 @@ elif page == "🧠 AI Evidence & Rules":
         [Dense: 1 Unit, Sigmoid Output → Gap Probability]
         ```
         """)
-
-
-# ==============================================================================
-# 18. ROUTING: 📑 DOSSIER REPORTS
-# ==============================================================================
-elif page == "📑 Dossier Reports":
-    st.title("Executive Research Dossier Generator")
-    st.caption("Compile your verified research gaps, statistics, and literature findings into an A4 PDF document.")
-
-    val_count = len(st.session_state.validated_gaps)
-    st.metric("Researcher-Validated Gaps Ready for Export", f"{val_count}")
-
-    if val_count == 0:
-        st.warning("You haven't validated any gaps yet. Navigate to '🔍 Research Gap Mining & Suggestions' and click '✓ Validate Gap'.")
-    else:
-        st.subheader("Summary of Verified Gaps & Recommendations")
-        for g in st.session_state.validated_gaps.values():
-            st.markdown(f"• **{g['paper']}**: *\"{g['sentence']}\"*")
-            st.caption(f"↳ 💡 Recommendation: {g.get('suggestion_text', 'Further empirical benchmarks needed.')}")
-
-        st.markdown("---")
-        
-        if st.button("📄 Export Comprehensive Research Dossier (PDF)", use_container_width=True):
-            try:
-                from reportlab.lib.pagesizes import letter
-                from reportlab.pdfgen import canvas
-                
-                buffer = io.BytesIO()
-                p = canvas.Canvas(buffer, pagesize=letter)
-                p.setFont("Helvetica-Bold", 16)
-                p.drawString(50, 750, "RESEARCHLENS AI - EXECUTIVE GAP DOSSIER")
-                p.setFont("Helvetica", 10)
-                p.drawString(50, 735, "Generated automatically by AI Research Paper Analyzer")
-                p.drawString(50, 720, f"Date: {time.strftime('%Y-%m-%d')} | Papers Analyzed: {len(st.session_state.papers)}")
-                p.line(50, 710, 550, 710)
-                
-                y = 680
-                p.setFont("Helvetica-Bold", 12)
-                p.drawString(50, y, "Verified Research Gaps & Recommended Solutions:")
-                y -= 25
-                
-                for g in st.session_state.validated_gaps.values():
-                    p.setFont("Helvetica-Bold", 10)
-                    p.drawString(60, y, f"Source Paper: {g['paper']}")
-                    y -= 15
-                    p.setFont("Helvetica-Oblique", 9)
-                    p.drawString(70, y, f"Gap: \"{g['sentence'][:85]}...\"")
-                    y -= 15
-                    p.setFont("Helvetica", 8)
-                    p.drawString(70, y, f"Hybrid Confidence: {g['hybrid_score']} | Score: {g['hybrid_score']}")
-                    y -= 15
-                    p.setFont("Helvetica-Bold", 8)
-                    p.drawString(70, y, f"Actionable Next Step: {g.get('suggestion_text', '')[:85]}...")
-                    y -= 25
-                    if y < 90:
-                        p.showPage()
-                        y = 750
-                
-                p.save()
-                buffer.seek(0)
-                
-                st.download_button(
-                    label="⬇ Download PDF Dossier",
-                    data=buffer,
-                    file_name="ResearchLens_Gap_Dossier.pdf",
-                    mime="application/pdf"
-                )
-                st.success("Dossier compiled successfully!")
-            except Exception as e:
-                st.error(f"Report generation error: {e}")
-
-
-# ==============================================================================
-# 19. ROUTING: 🔬 PIPELINE ARCHITECTURE (WITH GLOWING PIPELINE & STEPS)
-# ==============================================================================
-elif page == "🔬 Pipeline Architecture":
-    st.title("System Architecture & Algorithmic Process")
-    st.caption("How the system ingests raw academic literature, normalizes text, and extracts research gaps.")
-
-    render_glowing_pipeline_component()
-    render_step_by_step_instructions()
-
-
-# ==============================================================================
-# 20. ROUTING: ❓ FAQ & INTERACTIVE RESEARCH Q&A
-# ==============================================================================
-elif page == "❓ FAQ & Research Q&A":
-    st.title("Frequently Asked Questions & Research Q&A")
-    st.caption("Ask questions about your uploaded literature corpus or review the algorithmic FAQ below.")
-
-    with st.container(border=True):
-        st.subheader("🔍 Ask a Question About Your Uploaded Papers")
-        st.write("Type any question, keyword, or concept to retrieve matching claims and insights from your library:")
-
-        q_input = st.text_input(
-            "Your Question / Query",
-            placeholder="e.g., What are the main computational limitations of self-attention?"
-        )
-
-        if q_input:
-            if not st.session_state.papers:
-                st.warning("Please upload papers or load the benchmark dataset to search.")
-            else:
-                keywords = [w.lower().strip("?,.!") for w in q_input.split() if len(w) > 3]
-                matches = []
-                for doc_name, meta in st.session_state.papers.items():
-                    for sent in meta.get("sentences", []):
-                        sent_low = sent.lower()
-                        score = sum(1 for kw in keywords if kw in sent_low)
-                        if score > 0:
-                            matches.append((doc_name, sent, score))
-
-                matches.sort(key=lambda x: x[2], reverse=True)
-
-                if matches:
-                    st.success(f"Found {len(matches)} relevant sentence matches across your literature:")
-                    for doc_name, sent, sc in matches[:5]:
-                        st.markdown(f"""
-                        <div class="kpi-card" style="margin-bottom:10px; border-width: 1.5px;">
-                            <div style="font-size:0.75rem; color:#ffaa00; font-weight:800;">SOURCE: {doc_name} (Relevance Score: {sc})</div>
-                            <div style="font-size:0.88rem; color:{text_color}; margin-top:4px; line-height:1.5;">"{sent}"</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.info("No exact matching sentences found. Try using broader technical keywords (e.g., 'limitation', 'computation', 'attention').")
-
-
-# ==============================================================================
-# 21. ROUTING: ⚙ SETTINGS & PLATFORM
-# ==============================================================================
-elif page == "⚙ Settings & Platform":
-    st.title("Platform Details & Execution Environment")
-    st.caption("Platform metadata, execution dependencies, and system health status.")
-
-    with st.container(border=True):
-        st.subheader("Platform Metadata")
-        st.markdown("""
-        - **Platform Name**: ResearchLens AI
-        - **Purpose**: Autonomous AI Research Paper Analyzer + Research Gap Mining
-        - **Release Edition**: @ 2026 Enterprise Academic Intelligence
-        - **Architecture**: Hybrid Ensemble (Lexical NLP + 1D-CNN Sequence Modeling)
-        """)
-
-    with st.container(border=True):
-        st.subheader("System Dependencies Status")
-        dep_cols = st.columns(4)
-        with dep_cols[0]:
-            st.success("PyMuPDF: ✓ Active")
-        with dep_cols[1]:
-            st.success("Scikit-Learn: ✓ Active")
-        with dep_cols[2]:
-            st.success("NLTK: ✓ Active")
-        with dep_cols[3]:
-            st.success("ReportLab: ✓ Active")
