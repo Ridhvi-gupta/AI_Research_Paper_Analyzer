@@ -1,0 +1,5 @@
+Accurate computational prediction of 3D protein structures from amino acid sequences has been a grand challenge in computational structural biology for decades.
+We present AlphaFold, a neural system that incorporates physical and biological constraints about protein structure, achieving atomic accuracy in blind CASP assessments.
+Nevertheless, a fundamental limitation is the inability to model conformational dynamics and equilibrium state ensembles in intrinsically disordered protein domains.
+Furthermore, high GPU memory requirements create a prohibitive bottleneck for multi-chain megadalton complexes and large quaternary assemblies.
+Future research should explore co-folding with small-molecule ligands, solvent thermodynamics, and predicting allosteric transitions in flexible drug targets.

@@ -26,6 +26,27 @@ def load_cnn_gap_model():
             return None, None
     return None, None
 
+def batch_predict_gap_probabilities(sentences: list[str]) -> list[float]:
+    """
+    High-performance batch evaluation for entire multi-paper corpora.
+    Runs vectorized Keras inference in a single batch pass (~0.1s).
+    """
+    if not sentences:
+        return []
+
+    model, tokenizer = load_cnn_gap_model()
+    if model is not None and tokenizer is not None:
+        try:
+            from tensorflow.keras.preprocessing.sequence import pad_sequences
+            seqs = tokenizer.texts_to_sequences(sentences)
+            padded = pad_sequences(seqs, maxlen=60, padding='post', truncating='post')
+            preds = model.predict(padded, batch_size=128, verbose=0).flatten().tolist()
+            return [round(float(p), 3) for p in preds]
+        except Exception:
+            pass
+
+    return [predict_gap_probability(s) for s in sentences]
+
 def predict_gap_probability(sentence: str) -> float:
     """
     Evaluates academic sentence sequence structure:

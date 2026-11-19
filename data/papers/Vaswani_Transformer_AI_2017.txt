@@ -1,0 +1,5 @@
+We propose the Transformer, a novel neural sequence architecture based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments on machine translation tasks demonstrate superior quality while being more parallelizable and requiring significantly less training time.
+However, the computational complexity of self-attention scales quadratically with sequence length, which poses a severe limitation for long-document understanding and genomic sequences.
+In addition, memory consumption during softmax attention computation limits batch sizes on distributed accelerators.
+Future work will explore sparse attention routing mechanisms and recurrent state approximations to mitigate memory bottlenecks on sequences exceeding ten thousand tokens.
+A notable drawback remains the lack of inductive positional bias, making heuristic positional embeddings necessary.

@@ -1,0 +1,5 @@
+Targeted genome modification using engineered CRISPR-Cas9 ribonucleoproteins has transformed functional genomics and molecular therapeutics.
+Single-guide RNA directed Cas9 endonucleases facilitate precise double-strand DNA cleavage at designated target loci across eukaryotic genomes.
+However, our evaluation indicates that the methodology is constrained by off-target genomic cleavage and cytotoxic chromosomal translocations in human hematopoietic stem cells.
+A persistent bottleneck remains in vivo delivery of editing vectors across the blood-brain barrier for treating neurodegenerative disorders.
+Future work will focus on chemical modification of single-guide RNAs and high-fidelity Cas9 variants with reduced non-specific genomic interactions.

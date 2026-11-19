@@ -9,19 +9,48 @@ import pymupdf
 from src.preprocessing import segment_sentences
 
 def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
-    """Extracts text from DOCX using zipfile & XML without external docx dependency."""
+    """Robust zero-dependency extractor for all DOCX variations, tables, and namespaces."""
+    paragraphs = []
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as docx:
-            xml_content = docx.read('word/document.xml')
-            tree = ET.fromstring(xml_content)
-            paragraphs = []
-            for p in tree.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):
-                texts = [node.text for node in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t') if node.text]
-                if texts:
-                    paragraphs.append(''.join(texts))
-            return '\n'.join(paragraphs)
+            namelist = docx.namelist()
+            doc_xmls = [f for f in namelist if f.startswith('word/') and f.endswith('.xml')]
+            doc_xmls.sort(key=lambda x: (0 if 'document' in x else 1, x))
+
+            for xml_file in doc_xmls:
+                if not any(k in xml_file for k in ['document', 'header', 'footer', 'notes', 'table']):
+                    continue
+                try:
+                    xml_content = docx.read(xml_file)
+                    tree = ET.fromstring(xml_content)
+                    for elem in tree.iter():
+                        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                        if tag in ['p', 'tr']:
+                            p_texts = []
+                            for child in elem.iter():
+                                ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                                if ctag == 't' and child.text:
+                                    p_texts.append(child.text)
+                            line = ''.join(p_texts).strip()
+                            if line and (not paragraphs or paragraphs[-1] != line):
+                                paragraphs.append(line)
+                except Exception:
+                    pass
+
+            if not paragraphs:
+                import html
+                for xml_file in doc_xmls:
+                    if 'document' in xml_file:
+                        raw_str = docx.read(xml_file).decode('utf-8', errors='ignore')
+                        matches = re.findall(r'<[^:>]*:?t\b[^>]*>(.*?)</[^:>]*:?t>', raw_str, flags=re.DOTALL)
+                        if matches:
+                            cleaned = [html.unescape(m).strip() for m in matches if m.strip()]
+                            if cleaned:
+                                paragraphs.append(' '.join(cleaned))
     except Exception as e:
         return f"DOCX parsing fallback: {str(e)}"
+
+    return '\n\n'.join(paragraphs)
 
 def extract_universal_document(file_bytes: bytes, filename: str) -> dict:
     """
@@ -74,14 +103,12 @@ def extract_universal_document(file_bytes: bytes, filename: str) -> dict:
         # 6. HTML / HTM (Web research publications)
         elif ext in [".html", ".htm"]:
             raw_html = file_bytes.decode("utf-8", errors="ignore")
-            # Strip script, style, and HTML tags
             clean_html = re.sub(r'<script.*?</script>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
             clean_html = re.sub(r'<style.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
             full_text = re.sub(r'<[^>]+>', ' ', clean_html)
             page_count = max(1, len(full_text.split()) // 450)
 
         else:
-            # General fallback decode
             full_text = file_bytes.decode("utf-8", errors="ignore")
             page_count = max(1, len(full_text.split()) // 450)
 
@@ -90,10 +117,18 @@ def extract_universal_document(file_bytes: bytes, filename: str) -> dict:
 
     # Section-Aware Reference Cutoff
     ref_match = re.search(r'\n\s*(?:References|Bibliography|REFERENCES|BIBLIOGRAPHY)\s*\n', full_text)
-    if ref_match:
-        analysis_text = full_text[:ref_match.start()]
+    if ref_match and ref_match.start() > 250:
+        candidate_text = full_text[:ref_match.start()].strip()
+        if len(candidate_text.split()) >= 50:
+            analysis_text = candidate_text
+        else:
+            analysis_text = full_text
     else:
         analysis_text = full_text
+
+    # Guard against completely blank extractions
+    if not analysis_text.strip():
+        analysis_text = full_text.strip() if full_text.strip() else f"Document {filename} ingested."
 
     sentences = segment_sentences(analysis_text)
     words = analysis_text.split()
@@ -103,7 +138,7 @@ def extract_universal_document(file_bytes: bytes, filename: str) -> dict:
         "filename": filename,
         "extension": ext.upper().replace(".", ""),
         "page_count": page_count,
-        "word_count": len(words),
+        "word_count": max(1, len(words)),
         "char_count": len(analysis_text),
         "sentences": sentences
     }

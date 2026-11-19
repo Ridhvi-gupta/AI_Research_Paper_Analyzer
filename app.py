@@ -11,9 +11,10 @@ import seaborn as sns
 # Backend Module Imports
 from src.universal_extractor import extract_universal_document
 from src.gap_rules import load_learned_triggers, induce_gap_vocabulary_from_corpus, save_learned_triggers
-from src.dynamic_gap_learner import load_learned_triggers, induce_gap_vocabulary_from_corpus
-from src.cnn_model import predict_gap_probability
+from src.cnn_model import predict_gap_probability, batch_predict_gap_probabilities
 from src.report_generator import generate_pdf_report
+from src.clustering import perform_universal_clustering, detect_document_domains
+from src.document_exporter import export_modified_file, build_modified_document_content
 
 # ==============================================================================
 # 1. PAGE CONFIGURATION
@@ -49,6 +50,19 @@ def save_to_history(entries):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(existing[:100], f, indent=2)
 
+def delete_from_history(filenames):
+    existing = load_history()
+    to_delete = set(filenames)
+    updated = [item for item in existing if item.get("filename") not in to_delete]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(updated, f, indent=2)
+    return updated
+
+def clear_all_history():
+    os.makedirs("data", exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f, indent=2)
+
 if "theme_mode" not in st.session_state:
     st.session_state.theme_mode = "Dark"
 if "papers" not in st.session_state:
@@ -59,6 +73,8 @@ if "rejected_gaps" not in st.session_state:
     st.session_state.rejected_gaps = set()
 if "newly_learned_words" not in st.session_state:
     st.session_state.newly_learned_words = []
+if "nav_selection" not in st.session_state:
+    st.session_state.nav_selection = "🏠 Home"
 
 # ==============================================================================
 # 3. DYNAMIC THEME STYLING WITH GLOWING PIPELINE BOXES
@@ -467,6 +483,7 @@ with st.sidebar:
             "❓ FAQ & Research Q&A",
             "⚙ Settings & Platform"
         ],
+        key="nav_selection",
         label_visibility="collapsed"
     )
 
@@ -522,8 +539,8 @@ if page == "🏠 Home":
             st.rerun()
     with hcol2:
         if st.button("📂 Upload Files (All Formats)", use_container_width=True, type="secondary"):
-            st.session_state.page = "🚀 Upload & Analyze Hub"
-            st.info("Head over to '🚀 Upload & Analyze Hub' in the sidebar to run an automated scan!")
+            st.session_state.nav_selection = "🚀 Upload & Analyze Hub"
+            st.rerun()
 
     st.markdown("---")
     render_glowing_pipeline_component()
@@ -607,6 +624,7 @@ elif page == "🚀 Upload & Analyze Hub":
 
         with hub_tab1:
             st.markdown("#### Document Disciplinary Classification")
+            st.caption("ℹ️ *'Total Word Count' reflects the extracted paper length (excluding bibliography/references). Primary discipline is inferred using cross-domain ontological matching.*")
             dom_rows = []
             for name, meta in st.session_state.papers.items():
                 primary, overlaps = detect_document_domains(meta["text"])
@@ -615,48 +633,95 @@ elif page == "🚀 Upload & Analyze Hub":
                     "Format": meta.get("extension", "PDF"),
                     "Primary Discipline": primary,
                     "Cross-Disciplinary Overlaps": ", ".join(overlaps) if overlaps else "Core Domain",
-                    "Words": f"{meta['word_count']:,}"
+                    "Total Word Count (Paper Length)": f"{meta['word_count']:,}"
                 })
             st.dataframe(pd.DataFrame(dom_rows), use_container_width=True)
 
         with hub_tab2:
-            if len(st.session_state.papers) >= 2:
+            if st.session_state.papers:
                 from sklearn.feature_extraction.text import TfidfVectorizer
                 from sklearn.metrics.pairwise import cosine_similarity
 
                 paper_names = list(st.session_state.papers.keys())
                 corpus = [st.session_state.papers[p]["text"] for p in paper_names]
 
-                vec = TfidfVectorizer(stop_words='english', max_features=300)
-                tfidf_matrix = vec.fit_transform(corpus)
-                sim_matrix = cosine_similarity(tfidf_matrix)
+                has_words = any(len(re.findall(r'\b[a-zA-Z]{2,}\b', text)) > 0 for text in corpus)
+                if not has_words:
+                    st.warning("⚠️ The uploaded document(s) contain insufficient text vocabulary for TF-IDF calculations. Please ensure documents contain extractable English text.")
+                else:
+                    try:
+                        vec = TfidfVectorizer(stop_words='english', max_features=300, token_pattern=r'(?u)\b\w+\b')
+                        tfidf_matrix = vec.fit_transform(corpus)
+                        sim_matrix = cosine_similarity(tfidf_matrix)
 
-                df_sim = pd.DataFrame(sim_matrix, index=[p[:18] for p in paper_names], columns=[p[:18] for p in paper_names])
+                        df_sim = pd.DataFrame(sim_matrix, index=[p[:18] for p in paper_names], columns=[p[:18] for p in paper_names])
 
-                fig_sim, ax_sim = plt.subplots(figsize=(7, 4.5), facecolor=bg_color)
-                ax_sim.set_facecolor(bg_color)
-                sns.heatmap(df_sim, annot=True, fmt=".2f", cmap="YlOrBr", ax=ax_sim, cbar=True,
-                            annot_kws={"color": "#080c14", "fontweight": "bold"})
-                ax_sim.tick_params(colors=text_color, labelsize=8)
-                ax_sim.set_title("Cross-Domain Semantic Similarity Matrix", color=text_color, fontsize=11, fontweight="bold")
-                st.pyplot(fig_sim)
+                        plot_w = max(5.0, min(10.0, len(paper_names) * 1.2))
+                        plot_h = max(3.5, min(8.0, len(paper_names) * 1.0))
+                        fig_sim, ax_sim = plt.subplots(figsize=(plot_w, plot_h), facecolor=bg_color)
+                        ax_sim.set_facecolor(bg_color)
+                        sns.heatmap(df_sim, annot=True, fmt=".2f", cmap="YlOrBr", ax=ax_sim, cbar=True,
+                                    annot_kws={"color": "#080c14", "fontweight": "bold"})
+                        ax_sim.tick_params(colors=text_color, labelsize=8)
+                        ax_sim.set_title("Cross-Domain Semantic Similarity Matrix", color=text_color, fontsize=11, fontweight="bold")
+                        st.pyplot(fig_sim)
+
+                        if len(paper_names) == 1:
+                            st.info("💡 1 document loaded (Self-similarity = 1.00). Upload additional papers to view cross-document similarity heatmaps.")
+                    except ValueError as ve:
+                        st.warning(f"⚠️ Could not compute TF-IDF similarity: {ve}. The documents may have insufficient vocabulary.")
             else:
-                st.info("Upload at least 2 papers to view similarity heatmaps.")
+                st.info("Upload at least 1 document to view similarity heatmaps.")
 
         with hub_tab3:
             active_triggers = load_learned_triggers()
-            gaps_found = []
 
+            # 1. Discovered Vocabulary & Learned Gap Indicators Section
+            st.markdown("#### 🧬 Discovered Vocabulary & Adaptive Gap Triggers")
+            if st.session_state.newly_learned_words:
+                st.success(f"✨ **{len(st.session_state.newly_learned_words)} New Gap Triggers** automatically learned & inducted from your uploaded papers:")
+                st.write(" ".join([f"<span class='gap-score-badge' style='margin-right:6px; margin-bottom:6px; display:inline-block;'>✨ {w}</span>" for w in st.session_state.newly_learned_words]), unsafe_allow_html=True)
+            else:
+                st.info(f"💡 The dynamic learner continuously scans papers for limitation patterns across AI, Bio, Medicine, Physics, and Chem. Currently active triggers in memory: **{len(active_triggers)} words**.")
+                with st.expander("🔍 View Active Gap Trigger Lexicon"):
+                    st.write(", ".join([f"`{w}`" for w in sorted(list(active_triggers))[:40]]) + ("..." if len(active_triggers) > 40 else ""))
+
+            st.markdown("---")
+
+            # 2. Vectorized Batch Mining of Gaps
+            st.markdown("#### 🎯 Mined Research Gaps & Actionable Recommendations")
+            
+            # Interactive Confidence Filter
+            f_col1, f_col2 = st.columns([2, 3])
+            with f_col1:
+                conf_threshold = st.slider("Min Gap Confidence Filter:", min_value=0.20, max_value=0.85, value=0.38, step=0.02, help="Lower to see more candidate gaps, raise for only highest-confidence limitations.")
+
+            # Prepare sentences across all loaded papers
+            candidate_items = []
             for doc_name, meta in st.session_state.papers.items():
                 for sent in meta.get("sentences", []):
+                    candidate_items.append((doc_name, sent))
+
+            gaps_found = []
+            if candidate_items:
+                all_sents = [item[1] for item in candidate_items]
+                # Fast vectorized batch evaluation
+                cnn_probs = batch_predict_gap_probabilities(all_sents)
+
+                for (doc_name, sent), cnn_prob in zip(candidate_items, cnn_probs):
                     s_low = sent.lower()
                     matched_rules = [kw for kw in active_triggers if kw in s_low]
-                    # Score sentence using 1D-CNN structural inference + dynamic rule match
-                    cnn_prob = predict_gap_probability(sent)
-                    rule_score = min(1.0, len(matched_rules) * 0.35)
-                    hybrid_score = round((0.4 * rule_score) + (0.6 * cnn_prob), 3)
+                    rule_score = min(1.0, len(matched_rules) * 0.40) if matched_rules else 0.0
 
-                    if hybrid_score >= 0.55:
+                    # Balanced hybrid confidence score
+                    if matched_rules and cnn_prob >= 0.30:
+                        hybrid_score = round(0.5 * rule_score + 0.5 * cnn_prob, 3)
+                    elif matched_rules:
+                        hybrid_score = round(0.6 * rule_score + 0.4 * cnn_prob, 3)
+                    else:
+                        hybrid_score = round(cnn_prob, 3)
+
+                    if hybrid_score >= conf_threshold:
                         suggestion_info = generate_actionable_suggestion(sent, doc_name)
                         gap_id = f"{doc_name}_{hash(sent)}"
                         gaps_found.append({
@@ -672,47 +737,82 @@ elif page == "🚀 Upload & Analyze Hub":
 
             gaps_found.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-            st.write(f"Identified **{len(gaps_found)} high-priority research gaps** across your interdisciplinary corpus:")
+            if gaps_found:
+                st.write(f"Identified **{len(gaps_found)} research gap claims** passing confidence threshold ≥ `{conf_threshold:.2f}`:")
+                for g in gaps_found:
+                    gid = g["id"]
+                    if gid in st.session_state.rejected_gaps:
+                        continue
 
-            for g in gaps_found:
-                gid = g["id"]
-                if gid in st.session_state.rejected_gaps:
-                    continue
+                    is_validated = gid in st.session_state.validated_gaps
+                    highlighted_html = highlight_trigger_words(g['sentence'], g['rules'])
 
-                is_validated = gid in st.session_state.validated_gaps
-                highlighted_html = highlight_trigger_words(g['sentence'], g['rules'])
+                    trigger_desc = f"Indicators: {', '.join(g['rules'])}" if g['rules'] else "CNN Neural Sequence Bottleneck"
 
-                st.markdown(f"""
-                <div class="gap-card">
-                    <div class="gap-paper">📄 Source: {g['paper']}</div>
-                    <div class="gap-text">"{highlighted_html}"</div>
-                    <div>
-                        <span class="gap-score-badge">Hybrid Score: {g['hybrid_score']}</span>
-                        <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN Structural Score: {g['cnn_prob']*100:.1f}%</span>
-                        <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">Triggered by: {', '.join(g['rules']) if g['rules'] else 'CNN Sequence Bottleneck'}</span>
+                    st.markdown(f"""
+                    <div class="gap-card">
+                        <div class="gap-paper">📄 Source: {g['paper']}</div>
+                        <div class="gap-text">"{highlighted_html}"</div>
+                        <div>
+                            <span class="gap-score-badge">Hybrid Score: {g['hybrid_score']}</span>
+                            <span class="gap-score-badge" style="border-color:#38bdf8; color:#38bdf8;">CNN Structural Score: {g['cnn_prob']*100:.1f}%</span>
+                            <span class="gap-score-badge" style="border-color:#a855f7; color:#c084fc;">{trigger_desc}</span>
+                        </div>
+                        <div class="gap-suggestion-box">
+                            <div class="gap-suggestion-title">💡 Actionable Research Recommendation:</div>
+                            <div style="font-weight:700; font-size:0.8rem; color:#10b981; margin-bottom:2px;">{g['suggestion_type']}</div>
+                            <div class="gap-suggestion-desc">{g['suggestion_text']}</div>
+                        </div>
                     </div>
-                    <div class="gap-suggestion-box">
-                        <div class="gap-suggestion-title">💡 Actionable Research Recommendation:</div>
-                        <div style="font-weight:700; font-size:0.8rem; color:#10b981; margin-bottom:2px;">{g['suggestion_type']}</div>
-                        <div class="gap-suggestion-desc">{g['suggestion_text']}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 
-                bcol1, bcol2, bcol3 = st.columns([1.2, 1, 4])
-                with bcol1:
-                    if not is_validated:
-                        if st.button("✓ Validate Gap", key=f"hub_val_{gid}"):
-                            st.session_state.validated_gaps[gid] = g
+                    bcol1, bcol2, bcol3 = st.columns([1.2, 1, 4])
+                    with bcol1:
+                        if not is_validated:
+                            if st.button("✓ Validate Gap", key=f"hub_val_{gid}"):
+                                st.session_state.validated_gaps[gid] = g
+                                st.rerun()
+                        else:
+                            st.success("✓ Validated by Researcher")
+                    with bcol2:
+                        if st.button("✕ Reject", key=f"hub_rej_{gid}"):
+                            st.session_state.rejected_gaps.add(gid)
+                            if gid in st.session_state.validated_gaps:
+                                del st.session_state.validated_gaps[gid]
                             st.rerun()
-                    else:
-                        st.success("✓ Validated by Researcher")
-                with bcol2:
-                    if st.button("✕ Reject", key=f"hub_rej_{gid}"):
-                        st.session_state.rejected_gaps.add(gid)
-                        if gid in st.session_state.validated_gaps:
-                            del st.session_state.validated_gaps[gid]
-                        st.rerun()
+
+            # Instant Download Card when gaps are validated
+            if st.session_state.validated_gaps:
+                st.markdown("---")
+                with st.container(border=True):
+                    st.markdown("### 📥 Download Modified Document (Addressed Gaps Applied)")
+                    st.caption("Download the updated paper enriched with the formal 'Validated Research Gaps & Strategic Amendments' section.")
+
+                    doc_groups = {}
+                    for g in st.session_state.validated_gaps.values():
+                        doc_groups.setdefault(g.get("paper", ""), []).append(g)
+
+                    c_doc, c_fmt, c_btn = st.columns([2.5, 2, 2])
+                    with c_doc:
+                        target_doc = st.selectbox("Document to Download:", options=list(doc_groups.keys()), key="hub_exp_doc")
+                    with c_fmt:
+                        target_fmt = st.selectbox("Format:", options=["PDF (.pdf)", "Word Document (.docx)", "Markdown (.md)", "Plain Text (.txt)", "JSON (.json)", "HTML (.html)"], key="hub_exp_fmt")
+                    with c_btn:
+                        st.write("")
+                        st.write("")
+                        orig_text = st.session_state.papers.get(target_doc, {}).get("text", "")
+                        doc_gaps = doc_groups[target_doc]
+                        buf, out_name, mime_type = export_modified_file(target_doc, orig_text, doc_gaps, target_fmt)
+                        st.download_button(
+                            label=f"💾 Download Modified {target_fmt.split()[0]}",
+                            data=buf,
+                            file_name=out_name,
+                            mime=mime_type,
+                            type="primary",
+                            use_container_width=True
+                        )
+            else:
+                st.warning(f"No research gaps scored above the threshold of {conf_threshold:.2f}. Try lowering the confidence slider above.")
 
 # ==============================================================================
 # 11. ROUTING: 📄 MULTI-FORMAT PAPERS LIBRARY
@@ -759,24 +859,55 @@ elif page == "📄 Multi-Format Papers Library":
 
     if st.session_state.papers:
         st.subheader("Documents Currently in Memory")
-        table_rows = []
-        for name, meta in st.session_state.papers.items():
+        st.caption("Click ❌ next to any paper to immediately unload it from active session memory.")
+        
+        m1, m2, m3, m4, m5 = st.columns([3.5, 2.5, 1.2, 1.2, 0.8])
+        m1.markdown("**Document Name**")
+        m2.markdown("**Discipline**")
+        m3.markdown("**Words**")
+        m4.markdown("**Sentences**")
+        m5.markdown("**Action**")
+        st.markdown("<hr style='margin:4px 0 10px 0; border-color:rgba(255,119,0,0.3);'>", unsafe_allow_html=True)
+
+        for p_idx, (name, meta) in enumerate(list(st.session_state.papers.items())):
             primary, _ = detect_document_domains(meta["text"])
-            table_rows.append({
-                "Document Name": name,
-                "Format": meta.get("extension", "PDF"),
-                "Discipline": primary,
-                "Words": f"{meta['word_count']:,}",
-                "Sentences": len(meta["sentences"]),
-                "Status": "✓ Active"
-            })
-        st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
+            c1, c2, c3, c4, c5 = st.columns([3.5, 2.5, 1.2, 1.2, 0.8])
+            c1.markdown(f"📄 **{name}** `({meta.get('extension', 'PDF')})`")
+            c2.caption(primary)
+            c3.write(f"{meta['word_count']:,}")
+            c4.write(str(len(meta["sentences"])))
+            if c5.button("❌", key=f"unload_mem_{p_idx}", help=f"Unload '{name}' from current memory"):
+                st.session_state.papers.pop(name, None)
+                st.rerun()
+            st.markdown("<hr style='margin:2px 0 6px 0; border-color:rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.subheader("📜 Historical Uploads Archive (All Formats)")
     history_records = load_history()
     if history_records:
-        st.dataframe(pd.DataFrame(history_records), use_container_width=True)
+        st.caption("Click the 🗑️ icon beside any document to permanently remove it from history.")
+        
+        h1, h2, h3, h4, h5, h6 = st.columns([3.5, 1.8, 1, 1.2, 1.2, 0.8])
+        h1.markdown("**Filename**")
+        h2.markdown("**Uploaded At**")
+        h3.markdown("**Pages**")
+        h4.markdown("**Words**")
+        h5.markdown("**Sentences**")
+        h6.markdown("**Action**")
+        st.markdown("<hr style='margin:4px 0 10px 0; border-color:rgba(255,119,0,0.3);'>", unsafe_allow_html=True)
+
+        for idx, r in enumerate(history_records):
+            c1, c2, c3, c4, c5, c6 = st.columns([3.5, 1.8, 1, 1.2, 1.2, 0.8])
+            fname = r.get("filename", "Unknown")
+            c1.markdown(f"📄 `{fname}`")
+            c2.caption(r.get("uploaded_at", "-"))
+            c3.write(str(r.get("pages", 1)))
+            c4.write(f"{r.get('words', 0):,}")
+            c5.write(str(r.get("sentences", 0)))
+            if c6.button("🗑️", key=f"del_hist_row_{idx}", help=f"Remove '{fname}' from history"):
+                delete_from_history([fname])
+                st.rerun()
+            st.markdown("<hr style='margin:2px 0 6px 0; border-color:rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
     else:
         st.info("No past upload history found yet.")
 
@@ -821,8 +952,8 @@ elif page == "🔗 Cosine Similarity":
     st.title("Cross-Domain Semantic Similarity")
     st.caption("Pairwise Cosine Similarity computed over TF-IDF vector representations.")
 
-    if len(st.session_state.papers) < 2:
-        st.warning("Cosine similarity requires at least 2 papers in the library. Please load benchmark corpus or upload more papers.")
+    if not st.session_state.papers:
+        st.warning("Cosine similarity requires at least 1 paper in the library. Please load benchmark corpus or upload papers.")
     else:
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.metrics.pairwise import cosine_similarity
@@ -830,38 +961,51 @@ elif page == "🔗 Cosine Similarity":
         paper_names = list(st.session_state.papers.keys())
         corpus = [st.session_state.papers[p]["text"] for p in paper_names]
 
-        vec = TfidfVectorizer(stop_words='english', max_features=500)
-        tfidf_matrix = vec.fit_transform(corpus)
-        sim_matrix = cosine_similarity(tfidf_matrix)
+        has_words = any(len(re.findall(r'\b[a-zA-Z]{2,}\b', text)) > 0 for text in corpus)
+        if not has_words:
+            st.warning("⚠️ The uploaded document(s) contain insufficient text vocabulary for Cosine Similarity. Please ensure documents contain extractable English text.")
+        else:
+            try:
+                vec = TfidfVectorizer(stop_words='english', max_features=500, token_pattern=r'(?u)\b\w+\b')
+                tfidf_matrix = vec.fit_transform(corpus)
+                sim_matrix = cosine_similarity(tfidf_matrix)
 
-        df_sim = pd.DataFrame(sim_matrix, index=[p[:20] for p in paper_names], columns=[p[:20] for p in paper_names])
+                df_sim = pd.DataFrame(sim_matrix, index=[p[:20] for p in paper_names], columns=[p[:20] for p in paper_names])
 
-        col_heat, col_pairs = st.columns([3, 2])
-        with col_heat:
-            fig, ax = plt.subplots(figsize=(7, 5), facecolor=bg_color)
-            ax.set_facecolor(bg_color)
-            sns.heatmap(df_sim, annot=True, fmt=".2f", cmap="YlOrBr", ax=ax, cbar=True,
-                        annot_kws={"color": "#080c14", "fontweight": "bold"})
-            ax.tick_params(colors=text_color, labelsize=8)
-            ax.set_title("Cosine Similarity Matrix", color=text_color, fontsize=11, fontweight="bold", pad=12)
-            st.pyplot(fig)
+                plot_w = max(5.5, min(10.0, len(paper_names) * 1.2))
+                plot_h = max(4.0, min(8.0, len(paper_names) * 1.0))
 
-        with col_pairs:
-            st.markdown("#### Top Similar Paper Pairs")
-            pairs = []
-            for i in range(len(paper_names)):
-                for j in range(i + 1, len(paper_names)):
-                    pairs.append((paper_names[i], paper_names[j], sim_matrix[i, j]))
-            pairs.sort(key=lambda x: x[2], reverse=True)
+                col_heat, col_pairs = st.columns([3, 2])
+                with col_heat:
+                    fig, ax = plt.subplots(figsize=(plot_w, plot_h), facecolor=bg_color)
+                    ax.set_facecolor(bg_color)
+                    sns.heatmap(df_sim, annot=True, fmt=".2f", cmap="YlOrBr", ax=ax, cbar=True,
+                                annot_kws={"color": "#080c14", "fontweight": "bold"})
+                    ax.tick_params(colors=text_color, labelsize=8)
+                    ax.set_title("Cosine Similarity Matrix", color=text_color, fontsize=11, fontweight="bold", pad=12)
+                    st.pyplot(fig)
 
-            for p1, p2, score in pairs[:4]:
-                st.markdown(f"""
-                <div class="kpi-card" style="margin-bottom:12px; border-width: 2px;">
-                    <div style="font-size:0.75rem; color:#ffaa00; font-weight:800;">SIMILARITY: {score:.2f}</div>
-                    <div style="font-size:0.84rem; font-weight:700; color:{text_color}; margin-top:2px;">{p1}</div>
-                    <div style="font-size:0.75rem; color:{sub_text};">↔ {p2}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                with col_pairs:
+                    st.markdown("#### Top Similar Paper Pairs")
+                    if len(paper_names) >= 2:
+                        pairs = []
+                        for i in range(len(paper_names)):
+                            for j in range(i + 1, len(paper_names)):
+                                pairs.append((paper_names[i], paper_names[j], sim_matrix[i, j]))
+                        pairs.sort(key=lambda x: x[2], reverse=True)
+
+                        for p1, p2, score in pairs[:6]:
+                            st.markdown(f"""
+                            <div class="kpi-card" style="margin-bottom:12px; border-width: 2px;">
+                                <div style="font-size:0.75rem; color:#ffaa00; font-weight:800;">SIMILARITY: {score:.2f}</div>
+                                <div style="font-size:0.84rem; font-weight:700; color:{text_color}; margin-top:2px;">{p1}</div>
+                                <div style="font-size:0.75rem; color:{sub_text};">↔ {p2}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("💡 1 document loaded (Self-similarity = 1.00). Cross-paper comparison pairs will automatically populate when you upload more papers.")
+            except ValueError as ve:
+                st.warning(f"⚠️ Could not compute TF-IDF Cosine Similarity: {ve}")
 
 # ==============================================================================
 # 14. ROUTING: 🧩 INTERDISCIPLINARY CLUSTERING (ALL DOMAINS: BIO, AI, MED, PHYS)
@@ -870,10 +1014,19 @@ elif page == "🧩 Interdisciplinary Clustering":
     st.title("Interdisciplinary Multi-Domain Clustering")
     st.caption("Partition complex cross-domain literature (Biology, AI, Clinical Medicine, Physics, Chemistry) into clusters with 2D PCA spatial maps.")
 
-    if len(st.session_state.papers) < 2:
-        st.warning("Clustering requires at least 2 documents.")
+    if not st.session_state.papers:
+        st.warning("Clustering requires at least 1 document. Please upload or load literature.")
     else:
-        k_val = st.slider("Select Cluster Count (k)", min_value=2, max_value=min(5, len(st.session_state.papers)), value=min(3, len(st.session_state.papers)))
+        num_docs = len(st.session_state.papers)
+        if num_docs == 1:
+            k_val = 1
+            st.info("ℹ️ 1 document loaded. Displaying single-document topological representation (Cluster 1). Upload more papers to partition into multiple clusters.")
+        elif num_docs == 2:
+            k_val = 2
+            st.info("ℹ️ 2 documents loaded. Partitioned into k = 2 clusters.")
+        else:
+            max_k = min(15, num_docs)
+            k_val = st.slider("Select Cluster Count (k)", min_value=2, max_value=max_k, value=min(3, max_k), help="Dynamically scales for any number of uploaded documents.")
         clust_res = perform_universal_clustering(st.session_state.papers, k=k_val)
 
         if "error" in clust_res:
@@ -924,17 +1077,35 @@ elif page == "🔍 Adaptive Gap Mining & Suggestions":
         st.info("No documents found. Load the multi-domain corpus to mine potential research gaps.")
     else:
         active_triggers = load_learned_triggers()
-        gaps_found = []
 
+        # Interactive Confidence Filter
+        f_col1, f_col2 = st.columns([2, 3])
+        with f_col1:
+            conf_threshold = st.slider("Confidence Sensitivity Filter:", min_value=0.20, max_value=0.85, value=0.38, step=0.02, key="adaptive_page_slider")
+
+        candidate_items = []
         for doc_name, meta in st.session_state.papers.items():
             for sent in meta.get("sentences", []):
+                candidate_items.append((doc_name, sent))
+
+        gaps_found = []
+        if candidate_items:
+            all_sents = [item[1] for item in candidate_items]
+            cnn_probs = batch_predict_gap_probabilities(all_sents)
+
+            for (doc_name, sent), cnn_prob in zip(candidate_items, cnn_probs):
                 s_low = sent.lower()
                 matched_rules = [kw for kw in active_triggers if kw in s_low]
-                cnn_prob = predict_gap_probability(sent)
-                rule_score = min(1.0, len(matched_rules) * 0.35)
-                hybrid_score = round((0.4 * rule_score) + (0.6 * cnn_prob), 3)
+                rule_score = min(1.0, len(matched_rules) * 0.40) if matched_rules else 0.0
 
-                if hybrid_score >= 0.55:
+                if matched_rules and cnn_prob >= 0.30:
+                    hybrid_score = round(0.5 * rule_score + 0.5 * cnn_prob, 3)
+                elif matched_rules:
+                    hybrid_score = round(0.6 * rule_score + 0.4 * cnn_prob, 3)
+                else:
+                    hybrid_score = round(cnn_prob, 3)
+
+                if hybrid_score >= conf_threshold:
                     suggestion_info = generate_actionable_suggestion(sent, doc_name)
                     gap_id = f"{doc_name}_{hash(sent)}"
                     gaps_found.append({
@@ -950,7 +1121,10 @@ elif page == "🔍 Adaptive Gap Mining & Suggestions":
 
         gaps_found.sort(key=lambda x: x["hybrid_score"], reverse=True)
 
-        st.write(f"Identified **{len(gaps_found)} high-probability limitation claims** across your literature:")
+        if gaps_found:
+            st.write(f"Identified **{len(gaps_found)} high-probability limitation claims** across your literature (Threshold ≥ `{conf_threshold:.2f}`):")
+        else:
+            st.warning(f"No research gaps scored above {conf_threshold:.2f}. Try lowering the confidence slider above.")
 
         for idx, g in enumerate(gaps_found):
             gid = g["id"]
@@ -992,6 +1166,36 @@ elif page == "🔍 Adaptive Gap Mining & Suggestions":
                         del st.session_state.validated_gaps[gid]
                     st.rerun()
 
+        if st.session_state.validated_gaps:
+            st.markdown("---")
+            with st.container(border=True):
+                st.markdown("### 📥 Download Modified Document (Addressed Gaps Applied)")
+                st.caption("Download the updated paper enriched with the formal 'Validated Research Gaps & Strategic Amendments' section.")
+
+                doc_groups = {}
+                for g in st.session_state.validated_gaps.values():
+                    doc_groups.setdefault(g.get("paper", ""), []).append(g)
+
+                c_doc, c_fmt, c_btn = st.columns([2.5, 2, 2])
+                with c_doc:
+                    target_doc = st.selectbox("Document to Download:", options=list(doc_groups.keys()), key="gap_page_doc")
+                with c_fmt:
+                    target_fmt = st.selectbox("Choose Format:", options=["PDF (.pdf)", "Word Document (.docx)", "Markdown (.md)", "Plain Text (.txt)", "JSON (.json)", "HTML (.html)"], key="gap_page_fmt")
+                with c_btn:
+                    st.write("")
+                    st.write("")
+                    orig_text = st.session_state.papers.get(target_doc, {}).get("text", "")
+                    doc_gaps = doc_groups[target_doc]
+                    buf, out_name, mime_type = export_modified_file(target_doc, orig_text, doc_gaps, target_fmt)
+                    st.download_button(
+                        label=f"💾 Download Modified {target_fmt.split()[0]}",
+                        data=buf,
+                        file_name=out_name,
+                        mime=mime_type,
+                        type="primary",
+                        use_container_width=True
+                    )
+
 # ==============================================================================
 # 16. ROUTING: 🧠 LEARNED VOCABULARY & AI RULES
 # ==============================================================================
@@ -1013,7 +1217,7 @@ elif page == "🧠 Learned Vocabulary & AI Rules":
             if new_word_input:
                 cur_triggers = load_learned_triggers()
                 cur_triggers.add(new_word_input.lower().strip())
-                from src.dynamic_gap_learner import save_learned_triggers
+                from src.gap_rules import save_learned_triggers
                 save_learned_triggers(cur_triggers)
                 st.success(f"✓ '{new_word_input}' has been permanently learned by the gap detector!")
                 st.rerun()
@@ -1055,6 +1259,39 @@ elif page == "📑 Dossier Reports":
             mime="application/pdf",
             use_container_width=True
         )
+
+        st.markdown("---")
+        st.subheader("📥 Export Individual Modified Papers (Choose Output Format)")
+        st.caption("Select any paper from your library and download its amended version with all validated research gaps incorporated.")
+
+        all_papers_list = list(st.session_state.papers.keys())
+        if all_papers_list:
+            c_p, c_f = st.columns([2.5, 2])
+            with c_p:
+                sel_p = st.selectbox("Select Paper to Export:", options=all_papers_list, key="dossier_indiv_doc")
+            with c_f:
+                sel_f = st.selectbox(
+                    "Select Output Format:",
+                    options=["PDF (.pdf)", "Word Document (.docx)", "Markdown (.md)", "Plain Text (.txt)", "JSON (.json)", "HTML (.html)"],
+                    key="dossier_indiv_fmt"
+                )
+
+            p_text = st.session_state.papers[sel_p].get("text", "")
+            p_gaps = [g for g in st.session_state.validated_gaps.values() if g.get("paper") == sel_p]
+
+            with st.expander(f"👁 Preview Changes & Amendments for '{sel_p}' ({len(p_gaps)} Validated Gaps)", expanded=False):
+                preview_str = build_modified_document_content(p_text, sel_p, p_gaps)
+                st.text_area("Enriched Document Preview:", value=preview_str[:3500] + ("\n... [truncated for preview]" if len(preview_str) > 3500 else ""), height=220, disabled=True)
+
+            buf_indiv, out_indiv, mime_indiv = export_modified_file(sel_p, p_text, p_gaps, sel_f)
+            st.download_button(
+                label=f"💾 Download Modified '{sel_p}' as {sel_f.split()[0]}",
+                data=buf_indiv,
+                file_name=out_indiv,
+                mime=mime_indiv,
+                type="primary",
+                use_container_width=True
+            )
 
 # ==============================================================================
 # 18. ROUTING: 🔬 PIPELINE ARCHITECTURE
@@ -1131,3 +1368,7 @@ elif page == "⚙ Settings & Platform":
             st.success("NLTK: ✓ Active")
         with dep_cols[3]:
             st.success("ReportLab: ✓ Active")
+
+
+## python src/train_cnn.py
+## python -m streamlit run app.py

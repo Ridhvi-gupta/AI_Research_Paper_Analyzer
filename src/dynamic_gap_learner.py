@@ -1,74 +1,89 @@
+"""
+Dynamic Gap Learner Module
+Autonomous vocabulary induction engine:
+Scans cross-domain research literature for contrastive, limitation, and boundary patterns,
+inducting newly discovered indicator keywords into memory.
+"""
+
 import os
 import json
 import re
-from gensim.models import Word2Vec
+from collections import Counter
+from src.gap_rules import (
+    load_learned_triggers,
+    save_learned_triggers,
+    detect_gap_indicators,
+    rule_score,
+    BASE_GAP_INDICATORS,
+    LEARNED_TRIGGERS_PATH
+)
 
-LEARNED_TRIGGERS_FILE = os.path.join("data", "learned_gap_triggers.json")
-
-# Base Conceptual Anchors for Research Gaps
-BASE_ANCHORS = [
-    "limitation", "drawback", "bottleneck", "challenge", "unresolved",
-    "constraint", "degrade", "insufficiency", "failure", "scarcity",
-    "prohibitive", "unviable", "lack", "underrepresented", "elusive"
+CONTEXT_PATTERNS = [
+    r"(?:remains|is still|leaves)\s+([a-z\-]+)",
+    r"(?:lack of|scarcity of|paucity of)\s+([a-z\-]+)",
+    r"(?:poorly|insufficiently|inadequately)\s+([a-z\-]+)",
+    r"(?:challenge|bottleneck|drawback|obstacle)\s+in\s+([a-z\-]+)",
+    r"(?:warrants|demands|necessitates)\s+further\s+([a-z\-]+)",
+    r"(?:fails to|unable to|hard to)\s+([a-z\-]+)",
+    r"(?:unresolved|understudied|unclear)\s+([a-z\-]+)"
 ]
 
-def load_learned_triggers() -> set:
-    """Loads discovered & validated gap indicators from persistent JSON."""
-    os.makedirs("data", exist_ok=True)
-    if os.path.exists(LEARNED_TRIGGERS_FILE):
-        try:
-            with open(LEARNED_TRIGGERS_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
-        except Exception:
-            pass
-    # Initialize with default seed set
-    default_set = set(BASE_ANCHORS + [
-        "however", "future work", "remains", "persist", "fails to", "fails when", "memory footprint", "imbalance"
-    ])
-    save_learned_triggers(default_set)
-    return default_set
+GENERAL_CONTRAST_WORDS = [
+    "unexplored", "challenging", "limited", "costly", "heuristic",
+    "degradation", "bottleneck", "intractable", "disparity", "imbalance",
+    "vulnerable", "scarce", "prohibitive", "incomputable", "cytotoxic",
+    "unviable", "non-trivial", "unfeasible", "degrade", "bottlenecks"
+]
 
-def save_learned_triggers(triggers: set):
-    """Saves discovered gap vocabulary to disk."""
-    os.makedirs("data", exist_ok=True)
-    with open(LEARNED_TRIGGERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(triggers)), f, indent=2)
-
-def induce_gap_vocabulary_from_corpus(sentences: list[str]) -> list[str]:
+def induce_gap_vocabulary_from_corpus(sentences: list[str], top_n: int = 15) -> list[str]:
     """
-    Continuous Self-Learning Engine:
-    Trains Word2Vec on the user's uploaded papers and scans the embedding space
-    to discover novel, domain-specific gap indicator words.
+    Extracts candidate limitation trigger words from newly ingested academic sentences.
+    Persists valid candidate discoveries into the global learned triggers store.
     """
-    tokenized_corpus = []
-    for s in sentences:
-        tokens = re.findall(r'\b[A-Za-z]{3,}\b', s.lower())
-        if tokens:
-            tokenized_corpus.append(tokens)
-
-    if len(tokenized_corpus) < 5:
+    if not sentences:
         return []
 
-    try:
-        w2v = Word2Vec(tokenized_corpus, vector_size=80, window=4, min_count=1, sg=1, epochs=10)
-    except Exception:
-        return []
+    from src.gap_rules import STOPWORDS
 
-    existing_triggers = load_learned_triggers()
-    newly_discovered = set()
+    candidates = []
+    for sent in sentences:
+        s_lower = sent.lower()
+        for pat in CONTEXT_PATTERNS:
+            for match in re.findall(pat, s_lower):
+                word = match.strip()
+                if len(word) > 3 and word not in STOPWORDS:
+                    candidates.append(word)
 
-    for anchor in BASE_ANCHORS:
-        if anchor in w2v.wv:
-            try:
-                neighbors = w2v.wv.most_similar(anchor, topn=4)
-                for word, sim in neighbors:
-                    if sim >= 0.40 and len(word) > 3 and word not in existing_triggers:
-                        newly_discovered.add(word)
-            except Exception:
-                continue
+        if any(marker in s_lower for marker in ["however,", "nevertheless,", "despite", "although", "yet "]):
+            words = re.findall(r"\b[a-z]{4,}\b", s_lower)
+            for w in words:
+                if w in GENERAL_CONTRAST_WORDS:
+                    candidates.append(w)
+
+    current_triggers = load_learned_triggers()
+    counts = Counter(candidates)
+    newly_discovered = []
+
+    for word, _ in counts.most_common(top_n * 2):
+        if word not in current_triggers and len(word) > 3:
+            newly_discovered.append(word)
+            current_triggers.add(word)
+            if len(newly_discovered) >= top_n:
+                break
 
     if newly_discovered:
-        updated = existing_triggers.union(newly_discovered)
-        save_learned_triggers(updated)
+        save_learned_triggers(current_triggers)
 
-    return sorted(list(newly_discovered))
+    return newly_discovered
+
+def get_lexicon_summary() -> dict:
+    """Returns statistics regarding active base vs learned triggers."""
+    active = load_learned_triggers()
+    base_set = set(BASE_GAP_INDICATORS)
+    learned_only = active - base_set
+    return {
+        "total_active_triggers": len(active),
+        "base_triggers": len(base_set),
+        "dynamically_learned_triggers": len(learned_only),
+        "learned_keywords": sorted(list(learned_only))
+    }
