@@ -36,6 +36,7 @@ def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
                     pass
 
             # Secondary regex fallback if ET was empty or namespaces were non-standard
+            
             if not paragraphs:
                 for xml_file in doc_xmls:
                     if 'document' in xml_file:
