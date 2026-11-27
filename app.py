@@ -1370,5 +1370,5 @@ elif page == "⚙ Settings & Platform":
             st.success("ReportLab: ✓ Active")
 
 
-## python src/train_cnn.py
+## python src/train_cnn.py : To train cnn model
 ## python -m streamlit run app.py
