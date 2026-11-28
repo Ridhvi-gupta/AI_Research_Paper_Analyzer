@@ -1371,4 +1371,4 @@ elif page == "⚙ Settings & Platform":
 
 
 ## python src/train_cnn.py : To train cnn model
-## python -m streamlit run app.py
+## python -m streamlit run app.py : To run the app
